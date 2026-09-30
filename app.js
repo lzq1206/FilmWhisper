@@ -208,6 +208,7 @@
     const filtered = filmPresets.filter((film) => `${film.name} ${film.meta}`.toLowerCase().includes(query));
     filmGrid.innerHTML = filtered.map((film) => `
       <button class="film-card ${state.selectedFilm === film.id ? "active" : ""}" data-film="${film.id}" style="--swatch:${film.swatch}" aria-label="选择 ${film.name}">
+        <span class="film-card-preview" aria-hidden="true"><img src="film-previews/${film.id}.jpg" alt="" loading="lazy" decoding="async"></span>
         <span class="film-card-star">${state.savedFilms.includes(film.id) ? "★" : "☆"}</span>
         <span class="film-card-copy"><span class="film-card-name">${film.name}</span><span class="film-card-meta">${film.meta}</span></span>
       </button>`).join("");
@@ -414,7 +415,152 @@
     return output;
   }
 
+  // The primary LUT and secondary pixel controls are the heaviest part of a
+  // preview render. Keep a small pool alive and split the image into row
+  // ranges so the main UI thread can continue handling sliders and scrolling.
+  const lutWorkerPool = {
+    workers: [],
+    pending: new Map(),
+    nextId: 1,
+    disabled: false,
+  };
+  let activeLutTask = null;
+  let queuedLutTask = null;
+
+  function workerCount() {
+    const cores = Number(window.navigator.hardwareConcurrency) || 2;
+    return Math.min(4, Math.max(2, cores));
+  }
+
+  function disableLutWorkers() {
+    lutWorkerPool.disabled = true;
+    lutWorkerPool.workers.forEach((worker) => worker.terminate());
+    lutWorkerPool.workers = [];
+    lutWorkerPool.pending.forEach(({ reject }) => reject(new Error("LUT worker unavailable")));
+    lutWorkerPool.pending.clear();
+  }
+
+  function getLutWorkerPool() {
+    if (lutWorkerPool.disabled || typeof Worker === "undefined" || !lutConfig) return null;
+    if (lutWorkerPool.workers.length) return lutWorkerPool;
+    try {
+      const init = {
+        type: "init",
+        size: lutState.size,
+        matrices: colorMatrices,
+        acr3Inverse,
+      };
+      for (let index = 0; index < workerCount(); index += 1) {
+        const worker = new Worker("pixel-worker.js");
+        worker.addEventListener("message", (event) => {
+          const message = event.data || {};
+          if (!message.id) return;
+          const pending = lutWorkerPool.pending.get(message.id);
+          if (!pending) return;
+          lutWorkerPool.pending.delete(message.id);
+          if (message.error) pending.reject(new Error(message.error));
+          else pending.resolve(message);
+        });
+        worker.addEventListener("error", () => disableLutWorkers());
+        worker.postMessage(init);
+        lutWorkerPool.workers.push(worker);
+      }
+      return lutWorkerPool;
+    } catch {
+      disableLutWorkers();
+      return null;
+    }
+  }
+
+  function workerValues(values) {
+    const fields = [
+      "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
+      "saturation", "vibrance", "grain", "grainSize", "grainColor", "bleach", "age",
+      "halation", "vignette", "distortion", "filter", "selectedFilm",
+    ];
+    return fields.reduce((result, field) => {
+      result[field] = values?.[field];
+      return result;
+    }, {});
+  }
+
+  function runLutWorkerChunks(source, width, height, amount, values) {
+    const pool = getLutWorkerPool();
+    const lut = getPrimaryLut();
+    if (!pool || !lut || !colorMatrices.srgbToXyz) {
+      return Promise.resolve({ data: applyPrimaryLut(source, amount), secondaryApplied: false });
+    }
+    const workerTotal = Math.min(pool.workers.length, Math.max(1, height));
+    const rowsPerWorker = Math.ceil(height / workerTotal);
+    const jobs = [];
+    for (let workerIndex = 0; workerIndex < workerTotal; workerIndex += 1) {
+      const startRow = workerIndex * rowsPerWorker;
+      const endRow = Math.min(height, startRow + rowsPerWorker);
+      if (startRow >= endRow) continue;
+      const start = startRow * width * 4;
+      const end = endRow * width * 4;
+      const chunk = source.slice(start, end);
+      const lutBuffer = lut.buffer.slice(lut.byteOffset, lut.byteOffset + lut.byteLength);
+      const id = lutWorkerPool.nextId++;
+      const worker = pool.workers[workerIndex % pool.workers.length];
+      jobs.push(new Promise((resolve, reject) => {
+        pool.pending.set(id, { resolve, reject });
+        worker.postMessage({
+          type: "render",
+          id,
+          startRow,
+          width,
+          height: endRow - startRow,
+          fullHeight: height,
+          amount,
+          values,
+          buffer: chunk.buffer,
+          lutBuffer,
+        }, [chunk.buffer, lutBuffer]);
+      }));
+    }
+    return Promise.all(jobs).then((chunks) => {
+      const output = new Uint8ClampedArray(source);
+      chunks.forEach((chunk) => output.set(new Uint8ClampedArray(chunk.buffer), chunk.startRow * width * 4));
+      return { data: output, secondaryApplied: true };
+    });
+  }
+
+  function applyPrimaryLutParallel(source, width, height, amount = 1, values = null) {
+    if (!getPrimaryLut() || amount <= 0) return Promise.resolve({ data: new Uint8ClampedArray(source), secondaryApplied: false });
+    const request = { source, width, height, amount, values: workerValues(values), resolve: null, reject: null };
+    const promise = new Promise((resolve, reject) => { request.resolve = resolve; request.reject = reject; });
+    if (queuedLutTask) queuedLutTask.resolve({ data: new Uint8ClampedArray(queuedLutTask.source), secondaryApplied: false });
+    queuedLutTask = request;
+
+    const drain = async () => {
+      if (activeLutTask || !queuedLutTask) return;
+      activeLutTask = queuedLutTask;
+      queuedLutTask = null;
+      try {
+        activeLutTask.resolve(await runLutWorkerChunks(activeLutTask.source, activeLutTask.width, activeLutTask.height, activeLutTask.amount, activeLutTask.values));
+      } catch (error) {
+        // A browser can block workers when the page is opened directly from
+        // disk. Preserve functionality with the exact synchronous fallback.
+        disableLutWorkers();
+        activeLutTask.resolve({ data: applyPrimaryLut(activeLutTask.source, activeLutTask.amount), secondaryApplied: false });
+      } finally {
+        activeLutTask = null;
+        if (queuedLutTask) drain();
+      }
+    };
+    drain();
+    return promise;
+  }
+
   function processPixels(source, width, height, values) {
+    const secondaryFields = [
+      "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
+      "saturation", "vibrance", "grain", "bleach", "age", "halation", "vignette", "distortion",
+    ];
+    const hasSecondaryWork = values.filter !== "无"
+      || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001);
+    if (!hasSecondaryWork) return source;
     const output = new Uint8ClampedArray(source);
     const exposure = Math.pow(2, Number(values.exposure) || 0);
     const contrast = 1 + (Number(values.contrast) || 0) / 100;
@@ -433,7 +579,7 @@
     const vignette = Number(values.vignette) / 100;
     const distortion = Number(values.distortion) / 100;
     const filter = values.filter;
-    const seed = state.selectedFilm.length * 17 + 11;
+    const seed = String(values.selectedFilm || state.selectedFilm).length * 17 + 11;
 
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
@@ -560,7 +706,7 @@
     return output;
   }
 
-  function makeProcessedCanvas(useBefore = false) {
+  async function makeProcessedCanvas(useBefore = false) {
     if (!state.imageLoaded || !state.image) return null;
     const size = fitSize();
     const sourceCanvas = document.createElement("canvas");
@@ -569,10 +715,12 @@
     sourceContext.drawImage(state.image, 0, 0, size.width, size.height);
     const values = activeValues(useBefore);
     const data = sourceContext.getImageData(0, 0, size.width, size.height);
-    const primary = useBefore
-      ? new Uint8ClampedArray(data.data)
-      : applyPrimaryLut(data.data, Number(values.filmAmount) / 100);
-    const processed = processPixels(primary, size.width, size.height, values);
+    const transformed = useBefore
+      ? { data: new Uint8ClampedArray(data.data), secondaryApplied: false }
+      : await applyPrimaryLutParallel(data.data, size.width, size.height, Number(values.filmAmount) / 100, values);
+    const processed = transformed.secondaryApplied
+      ? transformed.data
+      : processPixels(transformed.data, size.width, size.height, values);
     data.data.set(processed);
     sourceContext.putImageData(data, 0, 0);
     return transformCanvas(sourceCanvas, values);
@@ -607,32 +755,39 @@
     emptyState.classList.add("hidden");
     canvas.classList.add("ready");
     const token = ++renderToken;
-    window.requestAnimationFrame(() => {
+    renderStatus.textContent = "正在渲染 · 多核处理";
+    window.requestAnimationFrame(async () => {
       if (token !== renderToken) return;
-      const after = makeProcessedCanvas(false);
-      drawCanvas(canvas, state.before ? makeProcessedCanvas(true) : after);
-      if (state.compare) {
-        const before = makeProcessedCanvas(true);
+      try {
+        const after = await makeProcessedCanvas(false);
+        const before = state.before || state.compare ? await makeProcessedCanvas(true) : null;
+        if (token !== renderToken) return;
+        drawCanvas(canvas, state.before ? before : after);
+        if (state.compare) {
         drawCanvas(ensureCompareCanvas(), before);
         compareCanvas.classList.remove("hidden");
         canvas.classList.add("compare-active");
         compareLine.classList.remove("hidden");
-      } else if (compareCanvas) {
-        compareCanvas.classList.add("hidden");
-        canvas.classList.remove("compare-active");
-        compareLine.classList.add("hidden");
+        } else if (compareCanvas) {
+          compareCanvas.classList.add("hidden");
+          canvas.classList.remove("compare-active");
+          compareLine.classList.add("hidden");
+        }
+        canvas.style.transform = `scale(${state.zoom})`;
+        compareCanvas?.style.setProperty("transform", `scale(${state.zoom})`);
+        if (state.frameStyle !== "无" && Number(state.frameSize) > 0) {
+          canvas.style.border = `${Math.max(2, Number(state.frameSize) / 8)}px solid ${state.frameStyle.includes("White") ? "#f2eee4" : state.frameStyle.includes("Black") ? "#151515" : "#b89e7b"}`;
+          canvas.style.padding = `${Math.max(0, Number(state.frameSize) / 12)}px`;
+        } else {
+          canvas.style.border = "0";
+          canvas.style.padding = "0";
+        }
+        lastCanvasSize = { width: canvas.width, height: canvas.height };
+        renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${activeFilmLabel.textContent}`;
+      } catch (error) {
+        if (token === renderToken) renderStatus.textContent = "渲染失败 · 请重试";
+        console.error(error);
       }
-      canvas.style.transform = `scale(${state.zoom})`;
-      compareCanvas?.style.setProperty("transform", `scale(${state.zoom})`);
-      if (state.frameStyle !== "无" && Number(state.frameSize) > 0) {
-        canvas.style.border = `${Math.max(2, Number(state.frameSize) / 8)}px solid ${state.frameStyle.includes("White") ? "#f2eee4" : state.frameStyle.includes("Black") ? "#151515" : "#b89e7b"}`;
-        canvas.style.padding = `${Math.max(0, Number(state.frameSize) / 12)}px`;
-      } else {
-        canvas.style.border = "0";
-        canvas.style.padding = "0";
-      }
-      lastCanvasSize = { width: canvas.width, height: canvas.height };
-      renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${activeFilmLabel.textContent}`;
     });
   }
 
@@ -680,9 +835,10 @@
     image.src = url;
   }
 
-  function exportImage() {
+  async function exportImage() {
     if (!state.imageLoaded) return showToast("请先打开一张图片");
-    const source = makeProcessedCanvas(false);
+    const source = await makeProcessedCanvas(false);
+    if (!source) return showToast("导出失败");
     const type = state.outputFormat || "image/jpeg";
     const quality = Number(state.quality) / 100;
     source.toBlob((blob) => {

@@ -17,7 +17,9 @@ FilmWhisper 是一个面向浏览器的胶片模拟编辑器，部署为静态 G
 - 左侧胶片库完整载入 `ColorChecker Film Looks (3FR Pair Match)` 的 45 个配置名称。
 - 每个配置保留原 XMP 的 32³ RGBTable，压缩解码后以二进制资源按需载入，避免把大段色彩数据暴露在页面文字中。
 - 一次调色严格走 XMP 的色彩域路径：sRGB → D65/D50 → ProPhoto → ACR3 曲线 → 32³ LUT → ProPhoto → sRGB。
+- 每个胶片卡片的缩略图由对应 32³ LUT 生成，使用无文字样片，只展示色彩倾向，不引用原始照片文件名或来源信息。
 - 右侧面板只作用于 LUT 输出后的二次调色。切换胶片时所有二次调色恢复为中性值，不会把某个胶片的手工曝光、色温、颗粒或晕光偷偷写入右侧。
+- 主 LUT 与右侧二次调色均在 `pixel-worker.js` 的 2–4 个 Worker 中按行分块处理；连续拖动滑块时只保留最新一帧，避免旧渲染任务堆积在主线程。
 - 渲染资源采用与 [fotufilm-engine](https://github.com/DhaliwalX/fotufilm-engine) 相近的“配置索引 + 独立二进制包 + 分阶段处理”组织方式；页面保持静态部署，不依赖需要本地编译的 Swift/WASM 引擎。
 
 ### 功能对齐
