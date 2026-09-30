@@ -926,6 +926,23 @@
     return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
   }
 
+  // Keep the interactive preview light, but never use its display-sized canvas
+  // as the source for an export.  A 120 MP ceiling prevents an accidental
+  // browser allocation failure while preserving the native size of ordinary
+  // camera files.
+  function fullResolutionSize() {
+    if (!state.imageLoaded || !state.image) return { width: 0, height: 0 };
+    const rawWidth = Number(state.rawImage?.width || state.deepImage?.width || state.image.naturalWidth || state.image.width);
+    const rawHeight = Number(state.rawImage?.height || state.deepImage?.height || state.image.naturalHeight || state.image.height);
+    if (!Number.isFinite(rawWidth) || !Number.isFinite(rawHeight) || rawWidth <= 0 || rawHeight <= 0) return fitSize();
+    const maxPixels = 120_000_000;
+    const scale = Math.min(1, Math.sqrt(maxPixels / (rawWidth * rawHeight)));
+    return {
+      width: Math.max(1, Math.round(rawWidth * scale)),
+      height: Math.max(1, Math.round(rawHeight * scale)),
+    };
+  }
+
   function cropCanvas(source, ratio) {
     if (!ratio || ratio === "free") return source;
     const current = source.width / source.height;
@@ -989,6 +1006,7 @@
   function downsampleRaw(size) {
     const raw = state.rawImage;
     if (!raw) return null;
+    if (size.width === raw.width && size.height === raw.height && raw.colors !== 1) return raw.data;
     const output = new Uint16Array(size.width * size.height * 3);
     const channels = raw.colors === 1 ? 1 : 3;
     for (let y = 0; y < size.height; y += 1) {
@@ -1015,6 +1033,7 @@
   function downsampleDeep(size) {
     const deep = state.deepImage;
     if (!deep) return null;
+    if (size.width === deep.width && size.height === deep.height) return deep.data;
     const output = new Uint16Array(size.width * size.height * 4);
     for (let y = 0; y < size.height; y += 1) {
       const sourceY = Math.min(deep.height - 1, Math.floor((y + 0.5) * deep.height / size.height));
@@ -1116,9 +1135,9 @@
     return output;
   }
 
-  async function makeProcessedCanvas(useBefore = false) {
+  async function makeProcessedCanvas(useBefore = false, options = {}) {
     if (!state.imageLoaded || !state.image) return null;
-    const size = fitSize();
+    const size = options.fullResolution ? fullResolutionSize() : fitSize();
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = size.width; sourceCanvas.height = size.height;
     const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
@@ -1523,8 +1542,19 @@
 
   async function exportImage() {
     if (!state.imageLoaded) return showToast("请先打开一张图片");
-    const source = await makeProcessedCanvas(false);
-    if (!source) return showToast("导出失败");
+    renderStatus.textContent = "正在生成高清导出 · 多核处理";
+    let source;
+    try {
+      source = await makeProcessedCanvas(false, { fullResolution: true });
+    } catch (error) {
+      console.error("high-resolution export", error);
+      renderStatus.textContent = "高清导出失败";
+      return showToast("高清导出失败，请尝试较小的原图");
+    }
+    if (!source) {
+      renderStatus.textContent = "高清导出失败";
+      return showToast("导出失败");
+    }
     const type = state.outputFormat || "image/jpeg";
     const quality = Number(state.quality) / 100;
     if (type === "image/tiff") {
@@ -1536,6 +1566,7 @@
         anchor.download = `film-whisper-${Date.now()}.tif`;
         anchor.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
+        renderStatus.textContent = `${source.width} × ${source.height} · 已导出`;
         showToast("16 位 TIFF 已导出");
       } catch (error) {
         console.error(error);
@@ -1552,6 +1583,7 @@
       anchor.download = `film-whisper-${Date.now()}.${extension}`;
       anchor.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      renderStatus.textContent = `${source.width} × ${source.height} · 已导出`;
       showToast("文件已导出");
     }, type, quality);
   }
