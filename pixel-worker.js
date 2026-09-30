@@ -15,6 +15,12 @@ const workerState = {
   acr3Forward: null,
 };
 
+const ADOBE_RGB_TO_XYZ = [
+  [0.5766690429101305, 0.1855582379065463, 0.1882286462349947],
+  [0.29734497525053605, 0.6273635662554661, 0.07529145849399788],
+  [0.02703136138641234, 0.07068885253582723, 0.9913375368376388],
+];
+
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 
 function matrixVector(matrix, vector) {
@@ -32,6 +38,18 @@ function srgbDecode(value) {
 function srgbEncode(value) {
   const positive = Math.max(0, value);
   return positive <= 0.0031308 ? 12.92 * positive : 1.055 * positive ** (1 / 2.4) - 0.055;
+}
+
+function adobeRgbDecode(value) {
+  return Math.max(0, value) ** 2.19921875;
+}
+
+function inputSettings(colorSpace) {
+  const adobe = colorSpace === "adobe-rgb";
+  return {
+    matrix: adobe ? ADOBE_RGB_TO_XYZ : workerState.matrices.srgbToXyz,
+    decode: adobe ? adobeRgbDecode : srgbDecode,
+  };
 }
 
 function prophotoEncode(value) {
@@ -237,19 +255,20 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
   return output;
 }
 
-function renderChunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values) {
+function renderChunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3) {
   const lut = new Uint16Array(lutBuffer);
   const output = new Uint8ClampedArray(source);
   const matrices = workerState.matrices;
   if (!matrices?.srgbToXyz) return output;
+  const input = inputSettings(colorSpace);
   const mix = clamp01(amount);
   for (let index = 0; index < source.length; index += 4) {
     const original = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
-    const linearSrgb = original.map(srgbDecode);
-    const xyzD65 = matrixVector(matrices.srgbToXyz, linearSrgb);
+    const linearInput = original.map(input.decode);
+    const xyzD65 = matrixVector(input.matrix, linearInput);
     const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
     const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
-    const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(acr3Forward(value))));
+    const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
     const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
     const mappedProLinear = mappedPro.map(prophotoDecode);
     const mappedXyzD50 = matrixVector(matrices.prophotoToXyz, mappedProLinear);
@@ -273,7 +292,7 @@ self.onmessage = (event) => {
   }
   if (message.type !== "render") return;
   try {
-    const result = renderChunk(new Uint8ClampedArray(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values);
+    const result = renderChunk(new Uint8ClampedArray(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3);
     self.postMessage({ id: message.id, startRow: message.startRow, buffer: result.buffer }, [result.buffer]);
   } catch (error) {
     self.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) });

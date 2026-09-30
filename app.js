@@ -86,6 +86,11 @@
     imageUrl: "",
     imageLoaded: false,
     imageLabel: "",
+    // Browser images are already rendered/output-referred. Keep the source
+    // primaries when possible so an Adobe RGB JPEG is not gamut-compressed to
+    // sRGB before it reaches the XMP LUT.
+    imageColorSpace: "srgb",
+    imageApplyAcr3: false,
     history: [],
     historyIndex: -1,
     savedFilms: JSON.parse(localStorage.getItem("filmwhisper-saved") || "[]")
@@ -93,6 +98,7 @@
   };
 
   let renderToken = 0;
+  let imageLoadToken = 0;
   let toastTimer;
   let compareCanvas = null;
   let lastCanvasSize = { width: 0, height: 0 };
@@ -295,6 +301,11 @@
 
   const colorMatrices = lutConfig?.matrices || {};
   const acr3Inverse = Array.isArray(lutConfig?.acr3Inverse) ? lutConfig.acr3Inverse : [];
+  const adobeRgbToXyz = [
+    [0.5766690429101305, 0.1855582379065463, 0.1882286462349947],
+    [0.29734497525053605, 0.6273635662554661, 0.07529145849399788],
+    [0.02703136138641234, 0.07068885253582723, 0.9913375368376388],
+  ];
   const acr3ForwardTable = new Float32Array(4097);
 
   function clamp01(value) { return Math.max(0, Math.min(1, value)); }
@@ -314,6 +325,20 @@
   function srgbEncode(value) {
     const positive = Math.max(0, value);
     return positive <= 0.0031308 ? 12.92 * positive : 1.055 * positive ** (1 / 2.4) - 0.055;
+  }
+
+  function adobeRgbDecode(value) {
+    return Math.max(0, value) ** 2.19921875;
+  }
+
+  function inputColorSettings(values = null) {
+    const colorSpace = values?.inputColorSpace || state.imageColorSpace || "srgb";
+    const adobe = colorSpace === "adobe-rgb";
+    return {
+      matrix: adobe ? adobeRgbToXyz : colorMatrices.srgbToXyz,
+      decode: adobe ? adobeRgbDecode : srgbDecode,
+      applyAcr3: values?.imageApplyAcr3 ?? values?.inputApplyAcr3 ?? state.imageApplyAcr3,
+    };
   }
 
   function prophotoEncode(value) {
@@ -390,18 +415,19 @@
     return new Uint16Array(lutState.buffer, offset, lutState.size ** 3 * 3);
   }
 
-  function applyPrimaryLut(source, amount = 1) {
+  function applyPrimaryLut(source, amount = 1, values = null) {
     const lut = getPrimaryLut();
     if (!lut || !colorMatrices.srgbToXyz) return new Uint8ClampedArray(source);
+    const input = inputColorSettings(values);
     const output = new Uint8ClampedArray(source);
     const mix = clamp01(amount);
     for (let index = 0; index < source.length; index += 4) {
       const original = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
-      const linearSrgb = original.map(srgbDecode);
-      const xyzD65 = matrixVector(colorMatrices.srgbToXyz, linearSrgb);
+      const linearInput = original.map(input.decode);
+      const xyzD65 = matrixVector(input.matrix, linearInput);
       const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
       const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
-      const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(acr3Forward(value))));
+      const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(input.applyAcr3 ? acr3Forward(value) : value)));
       const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
       const mappedProLinear = mappedPro.map(prophotoDecode);
       const mappedXyzD50 = matrixVector(colorMatrices.prophotoToXyz, mappedProLinear);
@@ -477,6 +503,7 @@
       "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
       "saturation", "vibrance", "grain", "grainSize", "grainColor", "bleach", "age",
       "halation", "vignette", "distortion", "filter", "selectedFilm",
+      "imageColorSpace", "imageApplyAcr3",
     ];
     return fields.reduce((result, field) => {
       result[field] = values?.[field];
@@ -488,7 +515,7 @@
     const pool = getLutWorkerPool();
     const lut = getPrimaryLut();
     if (!pool || !lut || !colorMatrices.srgbToXyz) {
-      return Promise.resolve({ data: applyPrimaryLut(source, amount), secondaryApplied: false });
+      return Promise.resolve({ data: applyPrimaryLut(source, amount, values), secondaryApplied: false });
     }
     const workerTotal = Math.min(pool.workers.length, Math.max(1, height));
     const rowsPerWorker = Math.ceil(height / workerTotal);
@@ -514,6 +541,8 @@
           fullHeight: height,
           amount,
           values,
+          colorSpace: values?.imageColorSpace || state.imageColorSpace || "srgb",
+          applyAcr3: Boolean(values?.imageApplyAcr3 ?? state.imageApplyAcr3),
           buffer: chunk.buffer,
           lutBuffer,
         }, [chunk.buffer, lutBuffer]);
@@ -543,7 +572,7 @@
         // A browser can block workers when the page is opened directly from
         // disk. Preserve functionality with the exact synchronous fallback.
         disableLutWorkers();
-        activeLutTask.resolve({ data: applyPrimaryLut(activeLutTask.source, activeLutTask.amount), secondaryApplied: false });
+        activeLutTask.resolve({ data: applyPrimaryLut(activeLutTask.source, activeLutTask.amount, activeLutTask.values), secondaryApplied: false });
       } finally {
         activeLutTask = null;
         if (queuedLutTask) drain();
@@ -661,8 +690,10 @@
     if (!state.imageLoaded || !state.image) return { width: 0, height: 0 };
     const availableWidth = Math.max(240, stage.clientWidth - 50);
     const availableHeight = Math.max(200, stage.clientHeight - 50);
-    const sourceRatio = state.image.naturalWidth / state.image.naturalHeight;
-    let width = Math.min(availableWidth, state.image.naturalWidth);
+    const sourceWidth = state.image.naturalWidth || state.image.width;
+    const sourceHeight = state.image.naturalHeight || state.image.height;
+    const sourceRatio = sourceWidth / sourceHeight;
+    let width = Math.min(availableWidth, sourceWidth);
     let height = width / sourceRatio;
     if (height > availableHeight) { height = availableHeight; width = height * sourceRatio; }
     return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
@@ -706,6 +737,22 @@
     return output;
   }
 
+  function convertInputToSrgb(source) {
+    if (state.imageColorSpace !== "adobe-rgb") return new Uint8ClampedArray(source);
+    const output = new Uint8ClampedArray(source);
+    for (let index = 0; index < source.length; index += 4) {
+      const encoded = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
+      const linear = encoded.map(adobeRgbDecode);
+      const xyz = matrixVector(adobeRgbToXyz, linear);
+      const srgbLinear = matrixVector(colorMatrices.xyzToSrgb, xyz).map(clamp01);
+      const converted = srgbLinear.map(srgbEncode);
+      output[index] = Math.round(converted[0] * 255);
+      output[index + 1] = Math.round(converted[1] * 255);
+      output[index + 2] = Math.round(converted[2] * 255);
+    }
+    return output;
+  }
+
   async function makeProcessedCanvas(useBefore = false) {
     if (!state.imageLoaded || !state.image) return null;
     const size = fitSize();
@@ -716,7 +763,7 @@
     const values = activeValues(useBefore);
     const data = sourceContext.getImageData(0, 0, size.width, size.height);
     const transformed = useBefore
-      ? { data: new Uint8ClampedArray(data.data), secondaryApplied: false }
+      ? { data: convertInputToSrgb(data.data), secondaryApplied: false }
       : await applyPrimaryLutParallel(data.data, size.width, size.height, Number(values.filmAmount) / 100, values);
     const processed = transformed.secondaryApplied
       ? transformed.data
@@ -816,21 +863,53 @@
     render();
   }
 
-  function loadFile(file) {
+  async function detectInputColorSpace(file) {
+    try {
+      const header = await file.slice(0, 131072).arrayBuffer();
+      const text = new TextDecoder().decode(header);
+      if (/Adobe RGB\s*\(1998\)/i.test(text) || /Adobe RGB/i.test(text)) return "adobe-rgb";
+    } catch { /* use the safe sRGB default */ }
+    return "srgb";
+  }
+
+  function acceptImage(image, colorSpace, token, url = "") {
+    if (token !== imageLoadToken) {
+      image.close?.();
+      if (url) URL.revokeObjectURL(url);
+      return;
+    }
+    if (state.image?.close) state.image.close();
+    if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+    state.image = image;
+    state.imageUrl = url;
+    state.imageColorSpace = colorSpace;
+    // JPG/PNG/TIFF are already rendered/output-referred. Applying ACR3 here
+    // would double-apply the base tone curve before the Creative RGBTable.
+    state.imageApplyAcr3 = false;
+    state.imageLoaded = true;
+    state.imageLabel = "已载入图片";
+    state.zoom = 1;
+    syncControls();
+    render();
+    showToast("图片已载入");
+  }
+
+  async function loadFile(file) {
     if (!file || !file.type.startsWith("image/") && !/\.tiff?$/i.test(file.name)) return showToast("请选择图片文件");
+    const token = ++imageLoadToken;
+    const colorSpace = await detectInputColorSpace(file);
+    if (typeof window.createImageBitmap === "function") {
+      try {
+        // Preserve embedded Adobe RGB values. The following matrix conversion
+        // is performed explicitly before the ProPhoto/ACR LUT path.
+        const image = await window.createImageBitmap(file, { colorSpaceConversion: "none" });
+        acceptImage(image, colorSpace, token);
+        return;
+      } catch { /* fall through to the compatibility Image decoder */ }
+    }
     const url = URL.createObjectURL(file);
     const image = new Image();
-    image.onload = () => {
-      if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
-      state.image = image;
-      state.imageUrl = url;
-      state.imageLoaded = true;
-      state.imageLabel = "已载入图片";
-      state.zoom = 1;
-      syncControls();
-      render();
-      showToast("图片已载入");
-    };
+    image.onload = () => acceptImage(image, "srgb", token, url);
     image.onerror = () => { URL.revokeObjectURL(url); showToast("图片无法读取"); };
     image.src = url;
   }
