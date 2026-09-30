@@ -172,24 +172,6 @@
                 <div class="control-row"><label for="frameSize">边框大小</label><output data-output="frameSize">0</output><input id="frameSize" data-field="frameSize" type="range" min="0" max="100" step="1" value="0" /></div>
               </div>
             </section>
-            <section class="inspector-section" data-section="regional">
-              <button class="section-heading" type="button"><span>分区色调</span><span class="section-chevron">⌄</span></button>
-              <div class="section-body">
-                <div class="select-row"><label for="regionTarget">区域</label><select id="regionTarget" data-field="regionTarget"><option value="Shadows">阴影</option><option value="Midtones">中间调</option><option value="Highlights">高光</option></select></div>
-                <div class="control-row"><label for="regionWarmth">暖度</label><output data-output="regionWarmth">0</output><input id="regionWarmth" data-field="regionWarmth" type="range" min="-100" max="100" value="0" /></div>
-                <div class="control-row"><label for="regionTint">色调</label><output data-output="regionTint">0</output><input id="regionTint" data-field="regionTint" type="range" min="-100" max="100" value="0" /></div>
-                <div class="control-row"><label for="regionLevel">层次</label><output data-output="regionLevel">0</output><input id="regionLevel" data-field="regionLevel" type="range" min="-100" max="100" value="0" /></div>
-              </div>
-            </section>
-            <section class="inspector-section" data-section="grade">
-              <button class="section-heading" type="button"><span>编码调色</span><span class="section-chevron">⌄</span></button>
-              <div class="section-body">
-                <div class="select-row"><label for="gradeCurve">曲线</label><select id="gradeCurve" data-field="gradeCurve"><option value="Log">对数</option><option value="Linear">线性</option><option value="RGB">RGB</option><option value="Luma">亮度</option><option value="Chroma">色度</option><option value="OKLab L">OKLab L</option><option value="OKLab a/b">OKLab a/b</option></select></div>
-                <div class="control-row"><label for="gradeContrast">对比度</label><output data-output="gradeContrast">0</output><input id="gradeContrast" data-field="gradeContrast" type="range" min="-100" max="100" value="0" /></div>
-                <div class="control-row"><label for="gradeSaturation">饱和度</label><output data-output="gradeSaturation">0</output><input id="gradeSaturation" data-field="gradeSaturation" type="range" min="-100" max="100" value="0" /></div>
-                <button class="tool-button" data-action="auto-levels">自动平衡</button>
-              </div>
-            </section>
             <section class="inspector-section" data-section="screen">
               <button class="section-heading" type="button"><span>屏幕转换</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
@@ -199,15 +181,6 @@
                 <div class="control-row"><label for="screenExposure">屏幕曝光</label><output data-output="screenExposure">0</output><input id="screenExposure" data-field="screenExposure" type="range" min="-3" max="3" step="0.01" value="0" /></div>
                 <div class="select-row"><label for="enlarger">放大设备</label><select id="enlarger" data-field="enlarger"><option value="Diffuser">散射式</option><option value="Condenser">聚光式</option><option value="Light Box">灯箱</option><option value="Scanner">扫描仪</option></select></div>
                 <div class="control-row"><label for="printerPreflash">预闪</label><output data-output="printerPreflash">0</output><input id="printerPreflash" data-field="printerPreflash" type="range" min="0" max="100" value="0" /></div>
-              </div>
-            </section>
-            <section class="inspector-section" data-section="selective">
-              <button class="section-heading" type="button"><span>选择性调色</span><span class="section-chevron">⌄</span></button>
-              <div class="section-body">
-                <div class="select-row"><label for="selectiveSubject">对象</label><select id="selectiveSubject" data-field="selectiveSubject"><option value="Color">颜色</option><option value="Light">亮度</option><option value="Range">范围</option><option value="Softness">柔和度</option><option value="Edge">边缘</option></select></div>
-                <div class="select-row"><label for="selectiveSpace">色彩空间</label><select id="selectiveSpace" data-field="selectiveSpace"><option value="RGB">RGB</option><option value="Luma">亮度</option><option value="Chroma">色度</option><option value="OKLab L">OKLab L</option><option value="OKLab a/b">OKLab a/b</option></select></div>
-                <div class="control-row"><label for="selectiveFeather">羽化</label><output data-output="selectiveFeather">50</output><input id="selectiveFeather" data-field="selectiveFeather" type="range" min="0" max="100" value="50" /></div>
-                <button class="tool-button" data-action="add-filter">＋ 添加滤镜</button>
               </div>
             </section>
             <section class="inspector-section" data-section="histogram">

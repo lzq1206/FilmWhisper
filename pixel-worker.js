@@ -180,7 +180,7 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
   const secondaryFields = [
     "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
     "saturation", "vibrance", "grain", "bleach", "age", "halation", "halationReturn", "haloHue", "vignette", "distortion",
-    "push", "regionWarmth", "regionTint", "regionLevel", "gradeContrast", "gradeSaturation", "screenExposure", "printerPreflash",
+    "push", "screenExposure", "printerPreflash",
   ];
   const hasSecondaryWork = values.filter !== "无"
     || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001)
@@ -236,17 +236,6 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       red += temp * 0.11 - tint * 0.035;
       green += tint * 0.08;
       blue -= temp * 0.11 - tint * 0.035;
-      const regionWeight = values.regionTarget === "Highlights"
-        ? Math.max(0, Math.min(1, luminance))
-        : values.regionTarget === "Midtones"
-          ? Math.max(0, 1 - Math.abs(luminance - 0.5) * 2.4)
-          : Math.max(0, 1 - luminance);
-      const regionAmount = regionWeight * 0.85;
-      red += (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.12;
-      green += (Number(values.regionTint) || 0) / 100 * regionAmount * 0.08;
-      blue -= (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.10;
-      const regionLevel = (Number(values.regionLevel) || 0) / 100 * regionAmount;
-      red *= Math.pow(2, regionLevel * 0.35); green *= Math.pow(2, regionLevel * 0.35); blue *= Math.pow(2, regionLevel * 0.35);
       if (filter === "Warm 1/8" || filter === "Warm 1/4") {
         const strength = filter === "Warm 1/4" ? 0.055 : 0.028;
         red += strength; green += strength * 0.35; blue -= strength * 0.75;
@@ -262,49 +251,6 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       const hsl = rgbToHsl(Math.max(0, red), Math.max(0, green), Math.max(0, blue));
       const vivid = vib >= 0 ? vib * (1 - hsl[1]) : vib;
       [red, green, blue] = hslToRgb(hsl[0], Math.max(0, Math.min(1, hsl[1] * sat + vivid)), hsl[2]);
-      // Use selective controls as a real soft mask for the grade controls.
-      // Color/RGB is the neutral global-grade state.
-      let selectiveMask = 1;
-      const selectiveIsCustom = values.selectiveSubject !== "Color" || values.selectiveSpace !== "RGB";
-      if (selectiveIsCustom) {
-        const feather = Math.max(0, Math.min(1, Number(values.selectiveFeather ?? 50) / 100));
-        const chroma = Math.max(0, Math.min(1, hsl[1]));
-        const baseMask = values.selectiveSubject === "Light"
-          ? hsl[2]
-          : values.selectiveSubject === "Range"
-            ? Math.max(0, 1 - Math.abs(hsl[2] - 0.5) * 2.2)
-            : values.selectiveSubject === "Softness"
-              ? 1 - chroma
-              : values.selectiveSubject === "Edge"
-                ? Math.min(1, chroma * 1.5)
-                : chroma;
-        const spaceMask = values.selectiveSpace === "Luma" || values.selectiveSpace === "OKLab L"
-          ? hsl[2]
-          : values.selectiveSpace === "Chroma" || values.selectiveSpace === "OKLab a/b"
-            ? chroma
-            : baseMask;
-        selectiveMask = Math.max(0, Math.min(1, (spaceMask * (0.45 + feather * 0.55)) + (1 - feather) * 0.2));
-      }
-      const gradeSat = 1 + ((Number(values.gradeSaturation) || 0) / 100) * selectiveMask;
-      if (Math.abs(Number(values.gradeSaturation) || 0) > 0.0001) {
-        const gradeGray = (red + green + blue) / 3;
-        red = gradeGray + (red - gradeGray) * gradeSat;
-        green = gradeGray + (green - gradeGray) * gradeSat;
-        blue = gradeGray + (blue - gradeGray) * gradeSat;
-      }
-      const gradeContrast = 1 + ((Number(values.gradeContrast) || 0) / 100) * selectiveMask;
-      if (Math.abs(Number(values.gradeContrast) || 0) > 0.0001) {
-        if (["Luma", "OKLab L"].includes(values.gradeCurve)) {
-          const gradeLum = red * 0.2126 + green * 0.7152 + blue * 0.0722;
-          const adjusted = (gradeLum - 0.5) * gradeContrast + 0.5;
-          const factor = gradeLum > 0.0001 ? adjusted / gradeLum : 1;
-          red *= factor; green *= factor; blue *= factor;
-        } else {
-          red = (red - 0.5) * gradeContrast + 0.5;
-          green = (green - 0.5) * gradeContrast + 0.5;
-          blue = (blue - 0.5) * gradeContrast + 0.5;
-        }
-      }
       const gray = (red + green + blue) / 3;
       red = red * (1 - bleach * 0.52) + gray * bleach * 0.52;
       green = green * (1 - bleach * 0.52) + gray * bleach * 0.52;

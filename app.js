@@ -49,22 +49,12 @@
     distortion: 0,
     frameSize: 0,
     straighten: 0,
-    regionTarget: "Shadows",
-    regionWarmth: 0,
-    regionTint: 0,
-    regionLevel: 0,
-    gradeCurve: "Log",
-    gradeContrast: 0,
-    gradeSaturation: 0,
     negativeViewing: "Reference Exposure",
     viewingIlluminant: "D50",
     paperGrade: "Reference",
     screenExposure: 0,
     enlarger: "Diffuser",
     printerPreflash: 0,
-    selectiveSubject: "Color",
-    selectiveSpace: "RGB",
-    selectiveFeather: 50,
     aspect: "free",
     filmFormat: "35mm",
     filter: "无",
@@ -249,7 +239,7 @@
 
   function syncModeSections() {
     const visible = {
-      develop: new Set(["light", "color", "film", "grain", "halation", "lens", "regional", "grade", "selective", "histogram"]),
+      develop: new Set(["light", "color", "film", "grain", "halation", "lens", "histogram"]),
       print: new Set(["screen", "frame", "output", "histogram"]),
       crop: new Set(["crop"]),
     }[state.mode] || new Set();
@@ -674,10 +664,9 @@
       "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
       "saturation", "vibrance", "grain", "grainSize", "grainColor", "bleach", "age",
       "halation", "halationReturn", "haloHue", "vignette", "distortion", "filter", "selectedFilm",
-      "filmFormat", "push", "regionTarget", "regionWarmth", "regionTint", "regionLevel",
-      "gradeCurve", "gradeContrast", "gradeSaturation", "negativeViewing", "viewingIlluminant",
+      "filmFormat", "push", "negativeViewing", "viewingIlluminant",
       "paperGrade", "screenExposure", "enlarger", "printerPreflash", "outputMedium",
-      "selectiveSubject", "selectiveSpace", "selectiveFeather", "rawSceneScale",
+      "rawSceneScale",
       "imageColorSpace", "imageApplyAcr3",
     ];
     return fields.reduce((result, field) => {
@@ -777,7 +766,7 @@
     const secondaryFields = [
       "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
       "saturation", "vibrance", "grain", "bleach", "age", "halation", "halationReturn", "haloHue", "vignette", "distortion",
-      "push", "regionWarmth", "regionTint", "regionLevel", "gradeContrast", "gradeSaturation", "screenExposure", "printerPreflash",
+      "push", "screenExposure", "printerPreflash",
     ];
     const hasSecondaryWork = values.filter !== "无"
       || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001)
@@ -832,17 +821,6 @@
         r += temp * 0.11 - tint * 0.035;
         g += tint * 0.08;
         b -= temp * 0.11 - tint * 0.035;
-        const regionWeight = values.regionTarget === "Highlights"
-          ? Math.max(0, Math.min(1, lum))
-          : values.regionTarget === "Midtones"
-            ? Math.max(0, 1 - Math.abs(lum - 0.5) * 2.4)
-            : Math.max(0, 1 - lum);
-        const regionAmount = regionWeight * 0.85;
-        r += (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.12;
-        g += (Number(values.regionTint) || 0) / 100 * regionAmount * 0.08;
-        b -= (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.10;
-        const regionLevel = (Number(values.regionLevel) || 0) / 100 * regionAmount;
-        r *= Math.pow(2, regionLevel * 0.35); g *= Math.pow(2, regionLevel * 0.35); b *= Math.pow(2, regionLevel * 0.35);
         if (filter === "Warm 1/8" || filter === "Warm 1/4") {
           const strength = filter === "Warm 1/4" ? 0.055 : 0.028;
           r += strength; g += strength * 0.35; b -= strength * 0.75;
@@ -858,52 +836,6 @@
         const [h, s, l] = rgbToHsl(Math.max(0, r), Math.max(0, g), Math.max(0, b));
         const vivid = vib >= 0 ? vib * (1 - s) : vib;
         [r, g, b] = hslToRgb(h, Math.max(0, Math.min(1, s * sat + vivid)), l);
-        // Selective grading is a mask for the grade controls rather than a
-        // decorative selector.  The neutral Color/RGB setting deliberately
-        // leaves the global grade unchanged; other targets derive a soft mask
-        // from the current pixel so the same grade sliders affect only that
-        // tonal/chroma region.
-        let selectiveMask = 1;
-        const selectiveIsCustom = values.selectiveSubject !== "Color" || values.selectiveSpace !== "RGB";
-        if (selectiveIsCustom) {
-          const feather = Math.max(0, Math.min(1, Number(values.selectiveFeather ?? 50) / 100));
-          const chroma = Math.max(0, Math.min(1, s));
-          const baseMask = values.selectiveSubject === "Light"
-            ? l
-            : values.selectiveSubject === "Range"
-              ? Math.max(0, 1 - Math.abs(l - 0.5) * 2.2)
-              : values.selectiveSubject === "Softness"
-                ? 1 - chroma
-                : values.selectiveSubject === "Edge"
-                  ? Math.min(1, chroma * 1.5)
-                  : chroma;
-          const spaceMask = values.selectiveSpace === "Luma" || values.selectiveSpace === "OKLab L"
-            ? l
-            : values.selectiveSpace === "Chroma" || values.selectiveSpace === "OKLab a/b"
-              ? chroma
-              : baseMask;
-          selectiveMask = Math.max(0, Math.min(1, (spaceMask * (0.45 + feather * 0.55)) + (1 - feather) * 0.2));
-        }
-        const gradeSat = 1 + ((Number(values.gradeSaturation) || 0) / 100) * selectiveMask;
-        if (Math.abs(Number(values.gradeSaturation) || 0) > 0.0001) {
-          const gradeGray = (r + g + b) / 3;
-          r = gradeGray + (r - gradeGray) * gradeSat;
-          g = gradeGray + (g - gradeGray) * gradeSat;
-          b = gradeGray + (b - gradeGray) * gradeSat;
-        }
-        const gradeContrast = 1 + ((Number(values.gradeContrast) || 0) / 100) * selectiveMask;
-        if (Math.abs(Number(values.gradeContrast) || 0) > 0.0001) {
-          if (["Luma", "OKLab L"].includes(values.gradeCurve)) {
-            const gradeLum = r * 0.2126 + g * 0.7152 + b * 0.0722;
-            const adjusted = (gradeLum - 0.5) * gradeContrast + 0.5;
-            const factor = gradeLum > 0.0001 ? adjusted / gradeLum : 1;
-            r *= factor; g *= factor; b *= factor;
-          } else {
-            r = (r - 0.5) * gradeContrast + 0.5;
-            g = (g - 0.5) * gradeContrast + 0.5;
-            b = (b - 0.5) * gradeContrast + 0.5;
-          }
-        }
         const gray = (r + g + b) / 3;
         r = r * (1 - bleach * 0.52) + gray * bleach * 0.52;
         g = g * (1 - bleach * 0.52) + gray * bleach * 0.52;
@@ -1909,17 +1841,6 @@
       case "rotate-right": pushHistory(); state.rotation = (state.rotation + 90) % 360; render(); break;
       case "flip-h": pushHistory(); state.flipH = !state.flipH; render(); break;
       case "favorite": toggleFavorite(); break;
-      case "auto-levels": pushHistory(); state.exposure = 0.12; state.contrast = 8; state.highlights = -10; state.shadows = 12; syncControls(); render(); showToast("已自动平衡层次"); break;
-      case "add-filter": {
-        pushHistory();
-        const filters = ["无", "Warm 1/8", "Warm 1/4", "Black Mist 1/8", "Glimmer 1/4", "Fog 1/8"];
-        const next = (filters.indexOf(state.filter) + 1) % filters.length;
-        state.filter = filters[next];
-        syncControls();
-        render();
-        showToast(state.filter === "无" ? "已移除滤镜" : `已应用${state.filter}滤镜`);
-        break;
-      }
       case "fullscreen": document.documentElement.requestFullscreen?.(); break;
       case "toggle-left":
         shell.classList.toggle("left-open");
