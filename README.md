@@ -8,28 +8,36 @@ FilmWhisper 是一个面向浏览器的胶片模拟编辑器，部署为静态 G
 
 - 顶部工作栏：撤销、重做、原图、重置、导出、主题切换。
 - 左侧胶片库：胶片、历史、收藏三个标签；搜索胶片、收藏胶片、打开图片、胶片卡片预览。
-- 中央工作区：Develop / Print / Crop 模式，画布预览，适合窗口、缩放、前后对比、全屏。
-- 右侧检查器：可折叠的 Light、Color、Film、Grain、Halation、Lens、Frame、Regional Tone、Encoded Grade、Screen Conversion、Selective、Histogram、Crop & Rotate、Output 分组。
+- 中央工作区：开发 / 打印 / 裁剪模式，画布预览，适合窗口、缩放、前后对比、全屏。
+- 右侧二次调色面板：可折叠的明暗、色彩、质感、颗粒、晕光、镜头、画框、分区色调、编码调色、屏幕转换、选择性调色、直方图、裁剪旋转和输出分组。
 - 移动端：左右面板变为抽屉，画布保持主操作区域。
+
+### 配置与渲染顺序
+
+- 左侧胶片库完整载入 `ColorChecker Film Looks (3FR Pair Match)` 的 45 个配置名称。
+- 每个配置保留原 XMP 的 32³ RGBTable，压缩解码后以二进制资源按需载入，避免把大段色彩数据暴露在页面文字中。
+- 一次调色严格走 XMP 的色彩域路径：sRGB → D65/D50 → ProPhoto → ACR3 曲线 → 32³ LUT → ProPhoto → sRGB。
+- 右侧面板只作用于 LUT 输出后的二次调色。切换胶片时所有二次调色恢复为中性值，不会把某个胶片的手工曝光、色温、颗粒或晕光偷偷写入右侧。
+- 渲染资源采用与 [fotufilm-engine](https://github.com/DhaliwalX/fotufilm-engine) 相近的“配置索引 + 独立二进制包 + 分阶段处理”组织方式；页面保持静态部署，不依赖需要本地编译的 Swift/WASM 引擎。
 
 ### 功能对齐
 
 | 分组 | 已实现功能 |
 | --- | --- |
-| Light | 曝光、对比度、高光、阴影 |
-| Color | 色温、色调、饱和度、自然饱和度 |
-| Film | 胶片格式、胶片强度、Push / Pull、漂白旁路、Film Age |
-| Grain | 颗粒数量、颗粒大小、彩色颗粒 |
-| Halation | 晕光、回返光、Halo Colour |
-| Lens | 暗角、畸变参数、滤镜选择 |
-| Frame | Carrier / Emulsion / Mount / Social 边框样式与大小 |
-| Regional Tone | Shadows / Midtones / Highlights 区域，Warmth、Tint、Level |
-| Encoded Grade | Log / Linear / RGB / Luma / Chroma / OKLab 曲线、对比度、饱和度、Auto Levels |
-| Screen Conversion | Negative Viewing、Viewing Illuminant、Paper Grade、Screen Exposure、Enlarger、Printer Preflash |
-| Selective | Subject、Range、Softness、Edge、Feather、色彩空间、Add Filter |
-| Histogram | 阴影 / 中间调 / 高光可视化 |
-| Crop & Rotate | 比例、校正、90°旋转、水平翻转、适合画布 |
-| Output | JPEG / PNG / WebP、质量、输出介质 |
+| 明暗 | 曝光、对比度、高光、阴影 |
+| 色彩 | 色温、色调、饱和度、自然饱和度 |
+| 主配置 / 质感 | 胶片格式、主配置强度、增感 / 减感、漂白旁路、老化 |
+| 颗粒 | 颗粒数量、颗粒大小、彩色颗粒 |
+| 晕光 | 晕光、回返光、晕光色相 |
+| 镜头 | 暗角、畸变参数、滤镜选择 |
+| 画框 | 片盒 / 乳剂 / 装裱 / 社交边框样式与大小 |
+| 分区色调 | 阴影 / 中间调 / 高光区域，暖度、色调、层次 |
+| 编码调色 | 对数 / 线性 / RGB / 亮度 / 色度 / OKLab 曲线、对比度、饱和度、自动平衡 |
+| 屏幕转换 | 负片查看、观看光源、纸张反差、屏幕曝光、放大设备、预闪 |
+| 选择性调色 | 对象、范围、柔和度、边缘、羽化、色彩空间、添加滤镜 |
+| 直方图 | 阴影 / 中间调 / 高光可视化 |
+| 裁剪与旋转 | 比例、校正、90°旋转、水平翻转、适合画布 |
+| 输出 | JPEG / PNG / WebP、质量、输出介质 |
 | 编辑工作流 | 本地打开、拖放、预设、原图预览、前后对比、撤销/重做、保存/载入本机设置、全屏、导出 |
 
 ### 设计对齐原则
@@ -47,4 +55,4 @@ FilmWhisper 是一个面向浏览器的胶片模拟编辑器，部署为静态 G
 
 ## 许可
 
-项目沿用仓库中的 GPL-3.0 许可。
+项目沿用仓库中的 GPL-3.0 许可。上游 `fotufilm-engine` 只作为公开的阶段化渲染思路参考；本仓库没有把它的编译产物或运行时文件混入页面。

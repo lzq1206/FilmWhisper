@@ -115,6 +115,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .profile-row > div { display: flex; align-items: center; gap: 7px; }
 .profile-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px #f1b2751a; }
 .mini-button { width: 25px; height: 25px; border-radius: 6px; color: var(--quiet); }
+.inspector-note { margin: 0 15px 10px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line)); border-radius: 7px; color: var(--quiet); background: color-mix(in srgb, var(--accent) 5%, var(--bg)); font-size: 10px; line-height: 1.5; }
 .inspector-scroll { flex: 1; padding: 0 15px 10px; }
 .inspector-section { border-top: 1px solid var(--line); }
 .section-heading { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 14px 3px 12px; border: 0; background: transparent; color: var(--text); font-weight: 700; cursor: pointer; text-align: left; }

@@ -16,7 +16,7 @@
           <button class="icon-button brand-mark" id="brandMenu" aria-label="打开菜单"><span>F</span></button>
           <div>
             <div class="brand-name">Film Whisper</div>
-            <div class="brand-subtitle">Film simulation studio</div>
+            <div class="brand-subtitle">胶片模拟工作台</div>
           </div>
         </div>
         <div class="top-actions">
@@ -32,15 +32,15 @@
 
       <div class="mobile-toolbar">
         <button class="compact-button" data-action="toggle-left">☰ <span>胶片库</span></button>
-        <div class="mobile-mode" id="mobileMode">Develop</div>
-        <button class="compact-button" data-action="toggle-right">☷ <span>检查器</span></button>
+        <div class="mobile-mode" id="mobileMode">开发</div>
+        <button class="compact-button" data-action="toggle-right">☷ <span>二次调色</span></button>
       </div>
 
       <div class="editor-layout">
         <aside class="side-panel left-panel" id="leftPanel">
           <div class="panel-header">
             <div>
-              <div class="eyebrow">LIBRARY</div>
+              <div class="eyebrow">胶片库</div>
               <h1>胶片库</h1>
             </div>
             <button class="icon-button mobile-close" data-action="toggle-left" aria-label="关闭胶片库">×</button>
@@ -68,9 +68,9 @@
         <section class="workspace" id="workspace">
           <div class="workspace-header">
             <nav class="mode-tabs" aria-label="工作模式">
-              <button class="mode-tab active" data-mode="develop">Develop</button>
-              <button class="mode-tab" data-mode="print">Print</button>
-              <button class="mode-tab" data-mode="crop">Crop</button>
+              <button class="mode-tab active" data-mode="develop">开发</button>
+              <button class="mode-tab" data-mode="print">打印</button>
+              <button class="mode-tab" data-mode="crop">裁剪</button>
             </nav>
             <div class="workspace-actions">
               <button class="subtle-button" data-action="save">保存</button>
@@ -107,18 +107,19 @@
         <aside class="side-panel right-panel" id="rightPanel">
           <div class="panel-header inspector-header">
             <div>
-              <div class="eyebrow">INSPECTOR</div>
-              <h1>检查器</h1>
+              <div class="eyebrow">二次调色</div>
+              <h1>二次调色</h1>
             </div>
-            <button class="icon-button mobile-close" data-action="toggle-right" aria-label="关闭检查器">×</button>
+            <button class="icon-button mobile-close" data-action="toggle-right" aria-label="关闭二次调色">×</button>
           </div>
           <div class="profile-row">
-            <div><span class="profile-dot"></span><span id="activeFilmLabel">Natural Base</span></div>
+            <div><span class="profile-dot"></span><span id="activeFilmLabel">ACROS 100</span></div>
             <button class="mini-button" data-action="favorite">☆</button>
           </div>
+          <div class="inspector-note">主配置负责一次调色；右侧参数为二次调色，默认保持中性。</div>
           <div class="inspector-scroll" id="inspectorScroll">
             <section class="inspector-section open" data-section="light">
-              <button class="section-heading" type="button"><span>Light</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>明暗</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="control-row"><label for="exposure">曝光</label><output data-output="exposure">0.00</output><input id="exposure" data-field="exposure" type="range" min="-3" max="3" step="0.01" value="0" /></div>
                 <div class="control-row"><label for="contrast">对比度</label><output data-output="contrast">0</output><input id="contrast" data-field="contrast" type="range" min="-100" max="100" step="1" value="0" /></div>
@@ -127,7 +128,7 @@
               </div>
             </section>
             <section class="inspector-section open" data-section="color">
-              <button class="section-heading" type="button"><span>Color</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>色彩</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="control-row"><label for="temperature">色温</label><output data-output="temperature">0</output><input id="temperature" data-field="temperature" type="range" min="-100" max="100" step="1" value="0" /></div>
                 <div class="control-row"><label for="tint">色调</label><output data-output="tint">0</output><input id="tint" data-field="tint" type="range" min="-100" max="100" step="1" value="0" /></div>
@@ -136,17 +137,17 @@
               </div>
             </section>
             <section class="inspector-section" data-section="film">
-              <button class="section-heading" type="button"><span>Film</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>主配置</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="select-row"><label for="filmFormat">格式</label><select id="filmFormat" data-field="filmFormat"><option>35mm</option><option>120</option><option>4×5</option><option>Instax Mini</option><option>Instax Square</option><option>Instax Wide</option><option>Super 8</option></select></div>
-                <div class="control-row"><label for="filmAmount">胶片强度</label><output data-output="filmAmount">100</output><input id="filmAmount" data-field="filmAmount" type="range" min="0" max="100" step="1" value="100" /></div>
-                <div class="control-row"><label for="push">Push / Pull</label><output data-output="push">0</output><input id="push" data-field="push" type="range" min="-2" max="2" step="1" value="0" /></div>
+                <div class="control-row"><label for="filmAmount">主配置强度</label><output data-output="filmAmount">100</output><input id="filmAmount" data-field="filmAmount" type="range" min="0" max="100" step="1" value="100" /></div>
+                <div class="control-row"><label for="push">增感 / 减感</label><output data-output="push">0</output><input id="push" data-field="push" type="range" min="-2" max="2" step="1" value="0" /></div>
                 <div class="control-row"><label for="bleach">漂白旁路</label><output data-output="bleach">0</output><input id="bleach" data-field="bleach" type="range" min="0" max="100" step="1" value="0" /></div>
-                <div class="control-row"><label for="age">Film Age</label><output data-output="age">0</output><input id="age" data-field="age" type="range" min="0" max="50" step="1" value="0" /></div>
+                <div class="control-row"><label for="age">老化</label><output data-output="age">0</output><input id="age" data-field="age" type="range" min="0" max="50" step="1" value="0" /></div>
               </div>
             </section>
             <section class="inspector-section" data-section="grain">
-              <button class="section-heading" type="button"><span>Grain</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>颗粒</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="control-row"><label for="grain">数量</label><output data-output="grain">0</output><input id="grain" data-field="grain" type="range" min="0" max="100" step="1" value="0" /></div>
                 <div class="control-row"><label for="grainSize">大小</label><output data-output="grainSize">35</output><input id="grainSize" data-field="grainSize" type="range" min="10" max="100" step="1" value="35" /></div>
@@ -154,75 +155,75 @@
               </div>
             </section>
             <section class="inspector-section" data-section="halation">
-              <button class="section-heading" type="button"><span>Halation</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>晕光</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="control-row"><label for="halation">晕光</label><output data-output="halation">0</output><input id="halation" data-field="halation" type="range" min="0" max="100" step="1" value="0" /></div>
                 <div class="control-row"><label for="halationReturn">回返光</label><output data-output="halationReturn">25</output><input id="halationReturn" data-field="halationReturn" type="range" min="0" max="100" step="1" value="25" /></div>
-                <div class="control-row"><label for="haloHue">Halo Colour</label><output data-output="haloHue">12</output><input id="haloHue" data-field="haloHue" type="range" min="0" max="60" step="1" value="12" /></div>
+                <div class="control-row"><label for="haloHue">晕光色相</label><output data-output="haloHue">12</output><input id="haloHue" data-field="haloHue" type="range" min="0" max="60" step="1" value="12" /></div>
               </div>
             </section>
             <section class="inspector-section" data-section="lens">
-              <button class="section-heading" type="button"><span>Lens</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>镜头</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="control-row"><label for="vignette">暗角</label><output data-output="vignette">0</output><input id="vignette" data-field="vignette" type="range" min="0" max="100" step="1" value="0" /></div>
                 <div class="control-row"><label for="distortion">畸变</label><output data-output="distortion">0</output><input id="distortion" data-field="distortion" type="range" min="-100" max="100" step="1" value="0" /></div>
-                <div class="select-row"><label for="filter">滤镜</label><select id="filter" data-field="filter"><option>无</option><option>Warm 1/8</option><option>Warm 1/4</option><option>Black Mist 1/8</option><option>Glimmer 1/4</option><option>Fog 1/8</option></select></div>
+                <div class="select-row"><label for="filter">滤镜</label><select id="filter" data-field="filter"><option value="无">无</option><option value="Warm 1/8">暖调 1/8</option><option value="Warm 1/4">暖调 1/4</option><option value="Black Mist 1/8">黑柔 1/8</option><option value="Glimmer 1/4">星芒 1/4</option><option value="Fog 1/8">雾化 1/8</option></select></div>
               </div>
             </section>
             <section class="inspector-section" data-section="frame">
-              <button class="section-heading" type="button"><span>Frame</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>画框</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="frameStyle">边框</label><select id="frameStyle" data-field="frameStyle"><option>无</option><option>Carrier Border</option><option>Emulsion Border</option><option>White Mount</option><option>Black Mount</option><option>Square Post</option><option>Portrait Post</option><option>Story</option></select></div>
+                <div class="select-row"><label for="frameStyle">边框</label><select id="frameStyle" data-field="frameStyle"><option value="无">无</option><option value="Carrier Border">片盒边框</option><option value="Emulsion Border">乳剂边框</option><option value="White Mount">白色装裱</option><option value="Black Mount">黑色装裱</option><option value="Square Post">方形贴片</option><option value="Portrait Post">竖幅贴片</option><option value="Story">故事比例</option></select></div>
                 <div class="control-row"><label for="frameSize">边框大小</label><output data-output="frameSize">0</output><input id="frameSize" data-field="frameSize" type="range" min="0" max="100" step="1" value="0" /></div>
               </div>
             </section>
             <section class="inspector-section" data-section="regional">
-              <button class="section-heading" type="button"><span>Regional Tone</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>分区色调</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="regionTarget">区域</label><select id="regionTarget" data-field="regionTarget"><option>Shadows</option><option>Midtones</option><option>Highlights</option></select></div>
-                <div class="control-row"><label for="regionWarmth">Warmth</label><output data-output="regionWarmth">0</output><input id="regionWarmth" data-field="regionWarmth" type="range" min="-100" max="100" value="0" /></div>
-                <div class="control-row"><label for="regionTint">Tint</label><output data-output="regionTint">0</output><input id="regionTint" data-field="regionTint" type="range" min="-100" max="100" value="0" /></div>
-                <div class="control-row"><label for="regionLevel">Level</label><output data-output="regionLevel">0</output><input id="regionLevel" data-field="regionLevel" type="range" min="-100" max="100" value="0" /></div>
+                <div class="select-row"><label for="regionTarget">区域</label><select id="regionTarget" data-field="regionTarget"><option value="Shadows">阴影</option><option value="Midtones">中间调</option><option value="Highlights">高光</option></select></div>
+                <div class="control-row"><label for="regionWarmth">暖度</label><output data-output="regionWarmth">0</output><input id="regionWarmth" data-field="regionWarmth" type="range" min="-100" max="100" value="0" /></div>
+                <div class="control-row"><label for="regionTint">色调</label><output data-output="regionTint">0</output><input id="regionTint" data-field="regionTint" type="range" min="-100" max="100" value="0" /></div>
+                <div class="control-row"><label for="regionLevel">层次</label><output data-output="regionLevel">0</output><input id="regionLevel" data-field="regionLevel" type="range" min="-100" max="100" value="0" /></div>
               </div>
             </section>
             <section class="inspector-section" data-section="grade">
-              <button class="section-heading" type="button"><span>Encoded Grade</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>编码调色</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="gradeCurve">曲线</label><select id="gradeCurve" data-field="gradeCurve"><option>Log</option><option>Linear</option><option>RGB</option><option>Luma</option><option>Chroma</option><option>OKLab L</option><option>OKLab a/b</option></select></div>
-                <div class="control-row"><label for="gradeContrast">Contrast</label><output data-output="gradeContrast">0</output><input id="gradeContrast" data-field="gradeContrast" type="range" min="-100" max="100" value="0" /></div>
-                <div class="control-row"><label for="gradeSaturation">Saturation</label><output data-output="gradeSaturation">0</output><input id="gradeSaturation" data-field="gradeSaturation" type="range" min="-100" max="100" value="0" /></div>
-                <button class="tool-button" data-action="auto-levels">Auto Levels</button>
+                <div class="select-row"><label for="gradeCurve">曲线</label><select id="gradeCurve" data-field="gradeCurve"><option value="Log">对数</option><option value="Linear">线性</option><option value="RGB">RGB</option><option value="Luma">亮度</option><option value="Chroma">色度</option><option value="OKLab L">OKLab L</option><option value="OKLab a/b">OKLab a/b</option></select></div>
+                <div class="control-row"><label for="gradeContrast">对比度</label><output data-output="gradeContrast">0</output><input id="gradeContrast" data-field="gradeContrast" type="range" min="-100" max="100" value="0" /></div>
+                <div class="control-row"><label for="gradeSaturation">饱和度</label><output data-output="gradeSaturation">0</output><input id="gradeSaturation" data-field="gradeSaturation" type="range" min="-100" max="100" value="0" /></div>
+                <button class="tool-button" data-action="auto-levels">自动平衡</button>
               </div>
             </section>
             <section class="inspector-section" data-section="screen">
-              <button class="section-heading" type="button"><span>Screen Conversion</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>屏幕转换</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="negativeViewing">Negative Viewing</label><select id="negativeViewing" data-field="negativeViewing"><option>Reference Exposure</option><option>Graded Print</option><option>Auto Levels</option></select></div>
-                <div class="select-row"><label for="viewingIlluminant">Viewing</label><select id="viewingIlluminant" data-field="viewingIlluminant"><option>D50</option><option>Daylight 5500 K</option><option>Tungsten 2856 K</option></select></div>
-                <div class="select-row"><label for="paperGrade">Paper Grade</label><select id="paperGrade" data-field="paperGrade"><option>Reference</option><option>Soft</option><option>Hard</option></select></div>
-                <div class="control-row"><label for="screenExposure">Screen Exposure</label><output data-output="screenExposure">0</output><input id="screenExposure" data-field="screenExposure" type="range" min="-3" max="3" step="0.01" value="0" /></div>
-                <div class="select-row"><label for="enlarger">Enlarger</label><select id="enlarger" data-field="enlarger"><option>Diffuser</option><option>Condenser</option><option>Light Box</option><option>Scanner</option></select></div>
-                <div class="control-row"><label for="printerPreflash">Printer Preflash</label><output data-output="printerPreflash">0</output><input id="printerPreflash" data-field="printerPreflash" type="range" min="0" max="100" value="0" /></div>
+                <div class="select-row"><label for="negativeViewing">负片查看</label><select id="negativeViewing" data-field="negativeViewing"><option value="Reference Exposure">参考曝光</option><option value="Graded Print">打印校色</option><option value="Auto Levels">自动平衡</option></select></div>
+                <div class="select-row"><label for="viewingIlluminant">观看光源</label><select id="viewingIlluminant" data-field="viewingIlluminant"><option value="D50">D50</option><option value="Daylight 5500 K">日光 5500 K</option><option value="Tungsten 2856 K">钨丝灯 2856 K</option></select></div>
+                <div class="select-row"><label for="paperGrade">纸张反差</label><select id="paperGrade" data-field="paperGrade"><option value="Reference">参考</option><option value="Soft">柔和</option><option value="Hard">硬调</option></select></div>
+                <div class="control-row"><label for="screenExposure">屏幕曝光</label><output data-output="screenExposure">0</output><input id="screenExposure" data-field="screenExposure" type="range" min="-3" max="3" step="0.01" value="0" /></div>
+                <div class="select-row"><label for="enlarger">放大设备</label><select id="enlarger" data-field="enlarger"><option value="Diffuser">散射式</option><option value="Condenser">聚光式</option><option value="Light Box">灯箱</option><option value="Scanner">扫描仪</option></select></div>
+                <div class="control-row"><label for="printerPreflash">预闪</label><output data-output="printerPreflash">0</output><input id="printerPreflash" data-field="printerPreflash" type="range" min="0" max="100" value="0" /></div>
               </div>
             </section>
             <section class="inspector-section" data-section="selective">
-              <button class="section-heading" type="button"><span>Selective</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>选择性调色</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="selectiveSubject">Subject</label><select id="selectiveSubject" data-field="selectiveSubject"><option>Color</option><option>Light</option><option>Range</option><option>Softness</option><option>Edge</option></select></div>
-                <div class="select-row"><label for="selectiveSpace">色彩空间</label><select id="selectiveSpace" data-field="selectiveSpace"><option>RGB</option><option>Luma</option><option>Chroma</option><option>OKLab L</option><option>OKLab a/b</option></select></div>
-                <div class="control-row"><label for="selectiveFeather">Feather</label><output data-output="selectiveFeather">50</output><input id="selectiveFeather" data-field="selectiveFeather" type="range" min="0" max="100" value="50" /></div>
-                <button class="tool-button" data-action="add-filter">＋ Add Filter</button>
+                <div class="select-row"><label for="selectiveSubject">对象</label><select id="selectiveSubject" data-field="selectiveSubject"><option value="Color">颜色</option><option value="Light">亮度</option><option value="Range">范围</option><option value="Softness">柔和度</option><option value="Edge">边缘</option></select></div>
+                <div class="select-row"><label for="selectiveSpace">色彩空间</label><select id="selectiveSpace" data-field="selectiveSpace"><option value="RGB">RGB</option><option value="Luma">亮度</option><option value="Chroma">色度</option><option value="OKLab L">OKLab L</option><option value="OKLab a/b">OKLab a/b</option></select></div>
+                <div class="control-row"><label for="selectiveFeather">羽化</label><output data-output="selectiveFeather">50</output><input id="selectiveFeather" data-field="selectiveFeather" type="range" min="0" max="100" value="50" /></div>
+                <button class="tool-button" data-action="add-filter">＋ 添加滤镜</button>
               </div>
             </section>
             <section class="inspector-section" data-section="histogram">
-              <button class="section-heading" type="button"><span>Histogram</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>直方图</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="mini-histogram" aria-label="直方图"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                <div class="histogram-legend"><span>Shadows</span><span>Midtones</span><span>Highlights</span></div>
+                <div class="histogram-legend"><span>阴影</span><span>中间调</span><span>高光</span></div>
               </div>
             </section>
             <section class="inspector-section" data-section="crop">
-              <button class="section-heading" type="button"><span>Crop &amp; Rotate</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>裁剪与旋转</span><span class="section-chevron">⌄</span></button>
               <div class="section-body crop-grid">
                 <div class="select-row"><label for="aspect">比例</label><select id="aspect" data-field="aspect"><option value="free">自由</option><option value="1">1 : 1</option><option value="1.5">3 : 2</option><option value="1.7778">16 : 9</option><option value="0.8">4 : 5</option><option value="0.5625">9 : 16</option></select></div>
                 <div class="control-row"><label for="straighten">校正</label><output data-output="straighten">0°</output><input id="straighten" data-field="straighten" type="range" min="-10" max="10" step="0.1" value="0" /></div>
@@ -230,11 +231,11 @@
               </div>
             </section>
             <section class="inspector-section" data-section="output">
-              <button class="section-heading" type="button"><span>Output</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>输出</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
                 <div class="select-row"><label for="outputFormat">格式</label><select id="outputFormat" data-field="outputFormat"><option value="image/jpeg">JPEG</option><option value="image/png">PNG</option><option value="image/webp">WebP</option></select></div>
                 <div class="control-row"><label for="quality">质量</label><output data-output="quality">92</output><input id="quality" data-field="quality" type="range" min="50" max="100" step="1" value="92" /></div>
-                <div class="select-row"><label for="outputMedium">输出介质</label><select id="outputMedium" data-field="outputMedium"><option>Photo</option><option>Print</option><option>Screen</option><option>Light Box</option><option>Scanner</option></select></div>
+                <div class="select-row"><label for="outputMedium">输出介质</label><select id="outputMedium" data-field="outputMedium"><option value="Photo">照片</option><option value="Print">打印</option><option value="Screen">屏幕</option><option value="Light Box">灯箱</option><option value="Scanner">扫描仪</option></select></div>
               </div>
             </section>
           </div>
@@ -244,6 +245,7 @@
       <div class="drawer-scrim" id="drawerScrim" data-action="close-drawers"></div>
       <input id="fileInput" type="file" accept="image/*,.tif,.tiff" hidden />
     </div>
+    <script src="film-profiles.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

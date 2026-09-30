@@ -67,21 +67,15 @@
     outputMedium: "Photo",
   };
 
-  const filmPresets = [
-    { id: "natural", name: "Natural Base", meta: "Neutral", swatch: "linear-gradient(135deg,#4e5968,#9ba3a6 48%,#60483c)", values: {} },
-    { id: "gold", name: "Amber 200", meta: "Warm negative", swatch: "linear-gradient(135deg,#5f3d2d,#d88c4e 48%,#e1c48d)", values: { temperature: 18, tint: 5, saturation: 8, contrast: 6, highlights: -8, shadows: 9, grain: 12 } },
-    { id: "chrome", name: "Soft Chrome", meta: "Muted slide", swatch: "linear-gradient(135deg,#28455a,#839ca2 46%,#c8a57d)", values: { temperature: -5, tint: -4, saturation: -9, contrast: 18, highlights: -18, shadows: -5, grain: 8, bleach: 6 } },
-    { id: "velvet", name: "Velvet 100", meta: "Deep colour", swatch: "linear-gradient(135deg,#18273a,#8f3e46 50%,#e1a064)", values: { temperature: 8, tint: 8, saturation: 21, contrast: 12, highlights: -12, shadows: -8, grain: 7 } },
-    { id: "pastel", name: "Pastel 160", meta: "Soft daylight", swatch: "linear-gradient(135deg,#799eaf,#d8cdb3 50%,#d98f85)", values: { temperature: 4, tint: -3, saturation: -16, vibrance: 20, contrast: -12, highlights: -20, shadows: 18, grain: 4 } },
-    { id: "instant", name: "Instant Mini", meta: "Pocket colour", swatch: "linear-gradient(135deg,#263d4f,#83a2ac 45%,#d07e57)", values: { temperature: -8, tint: 12, saturation: 7, contrast: 16, highlights: -10, shadows: 13, grain: 22, halation: 18, vignette: 12 } },
-    { id: "cine", name: "Cine 250D", meta: "Daylight motion", swatch: "linear-gradient(135deg,#213d44,#ad8e69 52%,#b95f4e)", values: { temperature: -5, tint: 4, saturation: -2, contrast: 22, highlights: -24, shadows: 6, grain: 16, halation: 12 } },
-    { id: "tungsten", name: "Night Tungsten", meta: "3200 K", swatch: "linear-gradient(135deg,#10182b,#394c86 48%,#bd6a50)", values: { temperature: -24, tint: 8, saturation: 13, contrast: 25, highlights: -12, shadows: -10, grain: 18, halation: 9, vignette: 18 } },
-    { id: "mono", name: "Mono 1600", meta: "Silver gelatin", swatch: "linear-gradient(135deg,#17191c,#85878b 50%,#d7d4ca)", values: { saturation: -100, contrast: 22, highlights: -10, shadows: 5, grain: 38, grainSize: 55, grainColor: 0 } },
-  ];
+  const filmPresets = (Array.isArray(window.FILM_PROFILES) && window.FILM_PROFILES.length
+    ? window.FILM_PROFILES
+    : [{ id: "acros-100", name: "ACROS 100", meta: "色彩配置", swatch: "linear-gradient(135deg,#20242b,#8b6a58 48%,#d9b083)", index: 0 }])
+    .map((profile) => ({ ...profile, values: {} }));
+  const defaultFilmId = filmPresets[0]?.id || "acros-100";
 
   const state = {
     ...defaultValues,
-    selectedFilm: "natural",
+    selectedFilm: defaultFilmId,
     mode: "develop",
     zoom: 1,
     before: false,
@@ -94,13 +88,41 @@
     imageLabel: "",
     history: [],
     historyIndex: -1,
-    savedFilms: JSON.parse(localStorage.getItem("filmwhisper-saved") || "[]"),
+    savedFilms: JSON.parse(localStorage.getItem("filmwhisper-saved") || "[]")
+      .filter((id) => filmPresets.some((film) => film.id === id)),
   };
 
   let renderToken = 0;
   let toastTimer;
   let compareCanvas = null;
   let lastCanvasSize = { width: 0, height: 0 };
+  const lutConfig = window.FILM_LUT_CONFIG || null;
+  const lutState = { buffer: null, size: lutConfig?.size || 32, count: lutConfig?.count || 0, ready: false, error: null };
+  const lutReady = fetch("film-luts.bin")
+    .then((response) => {
+      if (!response.ok) throw new Error(`LUT asset ${response.status}`);
+      return response.arrayBuffer();
+    })
+    .then((buffer) => {
+      const view = new DataView(buffer);
+      const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
+      const size = view.getUint32(8, true);
+      const count = view.getUint32(12, true);
+      if (magic !== "FWLUT32\0" || size !== lutState.size || count !== filmPresets.length) {
+        throw new Error("LUT asset header mismatch");
+      }
+      lutState.buffer = buffer;
+      lutState.size = size;
+      lutState.count = count;
+      lutState.ready = true;
+      if (state.imageLoaded) render();
+      return buffer;
+    })
+    .catch((error) => {
+      lutState.error = error;
+      showToast("主配置资源暂时不可用");
+      return null;
+    });
 
   function cloneValues() {
     const copy = {};
@@ -119,6 +141,7 @@
 
   function restore(snapshotValue) {
     Object.assign(state, snapshotValue);
+    if (!filmPresets.some((film) => film.id === state.selectedFilm)) state.selectedFilm = defaultFilmId;
     syncControls();
     renderFilmCards();
     render();
@@ -152,7 +175,7 @@
 
   function resetAll() {
     pushHistory();
-    Object.assign(state, defaultValues, { selectedFilm: "natural", rotation: 0, flipH: false, before: false, compare: false });
+    Object.assign(state, defaultValues, { selectedFilm: defaultFilmId, rotation: 0, flipH: false, before: false, compare: false });
     syncControls();
     renderFilmCards();
     render();
@@ -174,9 +197,9 @@
       const key = output.dataset.output;
       if (state[key] !== undefined) output.textContent = formatValue(key, state[key]);
     });
-    activeFilmLabel.textContent = filmPresets.find((film) => film.id === state.selectedFilm)?.name || "Natural Base";
+    activeFilmLabel.textContent = filmPresets.find((film) => film.id === state.selectedFilm)?.name || filmPresets[0]?.name || "ACROS 100";
     zoomLabel.textContent = state.zoom === 1 ? "适合" : `${Math.round(state.zoom * 100)}%`;
-    $("#mobileMode").textContent = state.mode[0].toUpperCase() + state.mode.slice(1);
+    $("#mobileMode").textContent = ({ develop: "开发", print: "打印", crop: "裁剪" })[state.mode] || "开发";
     document.body.classList.toggle("before-mode", state.before);
   }
 
@@ -199,7 +222,7 @@
     }
     savedList.innerHTML = state.savedFilms.map((id) => {
       const film = filmPresets.find((item) => item.id === id);
-      return `<button class="saved-item" data-saved-film="${id}"><span><strong>${film?.name || id}</strong><span>${film?.meta || "Film"}</span></span><span>★</span></button>`;
+      return `<button class="saved-item" data-saved-film="${id}"><span><strong>${film?.name || id}</strong><span>${film?.meta || "色彩配置"}</span></span><span>★</span></button>`;
     }).join("");
     $$('[data-saved-film]', savedList).forEach((card) => card.addEventListener("click", () => selectFilm(card.dataset.savedFilm)));
   }
@@ -212,7 +235,7 @@
     const items = state.history.slice().reverse().slice(0, 12);
     historyList.innerHTML = items.map((item, index) => {
       const film = filmPresets.find((f) => f.id === item.selectedFilm);
-      return `<button class="history-item" data-history-index="${state.history.length - 1 - index}"><span><strong>${film?.name || "Natural Base"}</strong><span>步骤 ${state.history.length - index}</span></span><span>›</span></button>`;
+      return `<button class="history-item" data-history-index="${state.history.length - 1 - index}"><span><strong>${film?.name || filmPresets[0]?.name || "ACROS 100"}</strong><span>步骤 ${state.history.length - index}</span></span><span>›</span></button>`;
     }).join("");
     $$('[data-history-index]', historyList).forEach((item) => item.addEventListener("click", () => {
       state.historyIndex = Number(item.dataset.historyIndex);
@@ -225,18 +248,17 @@
     if (!film) return;
     pushHistory();
     state.selectedFilm = id;
-    Object.assign(state, defaultValues, film.values, { selectedFilm: id });
+    // A profile is the complete first-pass transform. Selecting it must not
+    // inject a hidden look into the second-pass inspector controls.
+    Object.assign(state, defaultValues, { selectedFilm: id });
     syncControls();
     renderFilmCards();
     render();
-    showToast(`${film.name} 已应用`);
+    showToast(`${film.name} 主配置已应用，二次调色保持中性`);
   }
 
   function activeValues(useBefore = state.before) {
-    if (useBefore) return { ...defaultValues, selectedFilm: "natural", filmAmount: 0 };
-    // Selecting a film writes its starting values into state; subsequent
-    // inspector edits must remain effective instead of being overwritten on
-    // every render.
+    if (useBefore) return { ...defaultValues, selectedFilm: defaultFilmId, filmAmount: 0 };
     return { ...state };
   }
 
@@ -270,6 +292,128 @@
     return (n - Math.floor(n)) * 2 - 1;
   }
 
+  const colorMatrices = lutConfig?.matrices || {};
+  const acr3Inverse = Array.isArray(lutConfig?.acr3Inverse) ? lutConfig.acr3Inverse : [];
+  const acr3ForwardTable = new Float32Array(4097);
+
+  function clamp01(value) { return Math.max(0, Math.min(1, value)); }
+
+  function matrixVector(matrix, vector) {
+    return [
+      matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
+      matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
+      matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2],
+    ];
+  }
+
+  function srgbDecode(value) {
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  }
+
+  function srgbEncode(value) {
+    const positive = Math.max(0, value);
+    return positive <= 0.0031308 ? 12.92 * positive : 1.055 * positive ** (1 / 2.4) - 0.055;
+  }
+
+  function prophotoEncode(value) {
+    const sign = value < 0 ? -1 : 1;
+    const magnitude = Math.abs(value);
+    return sign * (magnitude < 1 / 512 ? magnitude * 16 : magnitude ** (1 / 1.8));
+  }
+
+  function prophotoDecode(value) {
+    const sign = value < 0 ? -1 : 1;
+    const magnitude = Math.abs(value);
+    return sign * (magnitude < 16 / 512 ? magnitude / 16 : magnitude ** 1.8);
+  }
+
+  function inverseAcr3Tone(value) {
+    if (acr3Inverse.length !== 1025) return value;
+    const input = clamp01(value);
+    let low = 0;
+    let high = acr3Inverse.length - 1;
+    while (high - low > 1) {
+      const middle = (low + high) >> 1;
+      if (acr3Inverse[middle] <= input) low = middle;
+      else high = middle;
+    }
+    const span = acr3Inverse[high] - acr3Inverse[low];
+    const fraction = span > 0 ? (input - acr3Inverse[low]) / span : 0;
+    return (low + fraction) / (acr3Inverse.length - 1);
+  }
+
+  for (let index = 0; index < acr3ForwardTable.length; index += 1) {
+    acr3ForwardTable[index] = inverseAcr3Tone(index / (acr3ForwardTable.length - 1));
+  }
+
+  function acr3Forward(value) {
+    const position = clamp01(value) * (acr3ForwardTable.length - 1);
+    const lower = Math.floor(position);
+    const upper = Math.min(acr3ForwardTable.length - 1, lower + 1);
+    const fraction = position - lower;
+    return acr3ForwardTable[lower] * (1 - fraction) + acr3ForwardTable[upper] * fraction;
+  }
+
+  function samplePrimaryLut(lut, red, green, blue) {
+    const size = lutState.size;
+    const max = size - 1;
+    const r = clamp01(red) * max;
+    const g = clamp01(green) * max;
+    const b = clamp01(blue) * max;
+    const r0 = Math.floor(r), g0 = Math.floor(g), b0 = Math.floor(b);
+    const r1 = Math.min(max, r0 + 1), g1 = Math.min(max, g0 + 1), b1 = Math.min(max, b0 + 1);
+    const rf = r - r0, gf = g - g0, bf = b - b0;
+    const index = (ri, gi, bi) => ((ri * size + gi) * size + bi) * 3;
+    const values = (ri, gi, bi) => {
+      const offset = index(ri, gi, bi);
+      return [lut[offset] / 65535, lut[offset + 1] / 65535, lut[offset + 2] / 65535];
+    };
+    const c000 = values(r0, g0, b0), c001 = values(r0, g0, b1);
+    const c010 = values(r0, g1, b0), c011 = values(r0, g1, b1);
+    const c100 = values(r1, g0, b0), c101 = values(r1, g0, b1);
+    const c110 = values(r1, g1, b0), c111 = values(r1, g1, b1);
+    return [0, 1, 2].map((channel) => {
+      const c00 = c000[channel] * (1 - bf) + c001[channel] * bf;
+      const c01 = c010[channel] * (1 - bf) + c011[channel] * bf;
+      const c10 = c100[channel] * (1 - bf) + c101[channel] * bf;
+      const c11 = c110[channel] * (1 - bf) + c111[channel] * bf;
+      return (c00 * (1 - gf) + c01 * gf) * (1 - rf) + (c10 * (1 - gf) + c11 * gf) * rf;
+    });
+  }
+
+  function getPrimaryLut() {
+    if (!lutState.ready || !lutState.buffer) return null;
+    const profile = filmPresets.find((item) => item.id === state.selectedFilm) || filmPresets[0];
+    if (!profile) return null;
+    const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
+    return new Uint16Array(lutState.buffer, offset, lutState.size ** 3 * 3);
+  }
+
+  function applyPrimaryLut(source, amount = 1) {
+    const lut = getPrimaryLut();
+    if (!lut || !colorMatrices.srgbToXyz) return new Uint8ClampedArray(source);
+    const output = new Uint8ClampedArray(source);
+    const mix = clamp01(amount);
+    for (let index = 0; index < source.length; index += 4) {
+      const original = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
+      const linearSrgb = original.map(srgbDecode);
+      const xyzD65 = matrixVector(colorMatrices.srgbToXyz, linearSrgb);
+      const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
+      const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
+      const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(acr3Forward(value))));
+      const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+      const mappedProLinear = mappedPro.map(prophotoDecode);
+      const mappedXyzD50 = matrixVector(colorMatrices.prophotoToXyz, mappedProLinear);
+      const mappedXyzD65 = matrixVector(colorMatrices.d50ToD65, mappedXyzD50);
+      const mappedLinearSrgb = matrixVector(colorMatrices.xyzToSrgb, mappedXyzD65).map(clamp01);
+      const mapped = mappedLinearSrgb.map(srgbEncode);
+      output[index] = Math.round((original[0] * (1 - mix) + mapped[0] * mix) * 255);
+      output[index + 1] = Math.round((original[1] * (1 - mix) + mapped[1] * mix) * 255);
+      output[index + 2] = Math.round((original[2] * (1 - mix) + mapped[2] * mix) * 255);
+    }
+    return output;
+  }
+
   function processPixels(source, width, height, values) {
     const output = new Uint8ClampedArray(source);
     const exposure = Math.pow(2, Number(values.exposure) || 0);
@@ -280,7 +424,6 @@
     const tint = (Number(values.tint) || 0) / 100;
     const sat = 1 + (Number(values.saturation) || 0) / 100;
     const vib = (Number(values.vibrance) || 0) / 100;
-    const filmAmount = Math.max(0, Math.min(1, Number(values.filmAmount) / 100));
     const grainAmount = Number(values.grain) / 100;
     const grainSize = Math.max(1, Number(values.grainSize) / 12);
     const grainColor = Number(values.grainColor) / 100;
@@ -360,10 +503,6 @@
           b += noise * strength * (0.72 + grainColor * 0.24);
         }
 
-        const mix = filmAmount;
-        r = original[0] * (1 - mix) + r * mix;
-        g = original[1] * (1 - mix) + g * mix;
-        b = original[2] * (1 - mix) + b * mix;
         output[i] = Math.max(0, Math.min(255, Math.round(r * 255)));
         output[i + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
         output[i + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
@@ -430,7 +569,10 @@
     sourceContext.drawImage(state.image, 0, 0, size.width, size.height);
     const values = activeValues(useBefore);
     const data = sourceContext.getImageData(0, 0, size.width, size.height);
-    const processed = processPixels(data.data, size.width, size.height, values);
+    const primary = useBefore
+      ? new Uint8ClampedArray(data.data)
+      : applyPrimaryLut(data.data, Number(values.filmAmount) / 100);
+    const processed = processPixels(primary, size.width, size.height, values);
     data.data.set(processed);
     sourceContext.putImageData(data, 0, 0);
     return transformCanvas(sourceCanvas, values);
@@ -583,10 +725,11 @@
   function setMode(mode) {
     state.mode = mode;
     $$('.mode-tab').forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
-    $("#mobileMode").textContent = mode[0].toUpperCase() + mode.slice(1);
+    const modeNames = { develop: "开发", print: "打印", crop: "裁剪" };
+    $("#mobileMode").textContent = modeNames[mode] || "开发";
     if (mode === "print") openSections(["frame", "output"]);
     if (mode === "crop") openSections(["crop"]);
-    showToast(`${mode[0].toUpperCase() + mode.slice(1)} 模式`);
+    showToast(`${modeNames[mode] || "开发"}模式`);
   }
 
   function openSections(names) {
