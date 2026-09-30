@@ -915,8 +915,11 @@
 
   function fitSize() {
     if (!state.imageLoaded || !state.image) return { width: 0, height: 0 };
-    const availableWidth = Math.max(240, stage.clientWidth - 50);
-    const availableHeight = Math.max(200, stage.clientHeight - 50);
+    const stageStyle = window.getComputedStyle(stage);
+    const horizontalPadding = parseFloat(stageStyle.paddingLeft || 0) + parseFloat(stageStyle.paddingRight || 0);
+    const verticalPadding = parseFloat(stageStyle.paddingTop || 0) + parseFloat(stageStyle.paddingBottom || 0);
+    const availableWidth = Math.max(240, stage.clientWidth - horizontalPadding);
+    const availableHeight = Math.max(200, stage.clientHeight - verticalPadding);
     const sourceWidth = state.image.naturalWidth || state.image.width;
     const sourceHeight = state.image.naturalHeight || state.image.height;
     const sourceRatio = sourceWidth / sourceHeight;
@@ -924,6 +927,21 @@
     let height = width / sourceRatio;
     if (height > availableHeight) { height = availableHeight; width = height * sourceRatio; }
     return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
+  }
+
+  function previewSize() {
+    const displaySize = fitSize();
+    if (!displaySize.width || !displaySize.height) return displaySize;
+    const sourceWidth = Number(state.rawImage?.width || state.deepImage?.width || state.image?.naturalWidth || state.image?.width || displaySize.width);
+    const sourceHeight = Number(state.rawImage?.height || state.deepImage?.height || state.image?.naturalHeight || state.image?.height || displaySize.height);
+    const ratio = sourceWidth > 0 && sourceHeight > 0 ? sourceWidth / sourceHeight : displaySize.width / displaySize.height;
+    const minimumLongEdge = 2000;
+    const maximumLongEdge = 4096;
+    const longEdge = Math.min(maximumLongEdge, Math.max(minimumLongEdge, displaySize.width, displaySize.height));
+    if (ratio >= 1) {
+      return { width: longEdge, height: Math.max(1, Math.round(longEdge / ratio)) };
+    }
+    return { width: Math.max(1, Math.round(longEdge * ratio)), height: longEdge };
   }
 
   // Keep the interactive preview light, but never use its display-sized canvas
@@ -1137,7 +1155,7 @@
 
   async function makeProcessedCanvas(useBefore = false, options = {}) {
     if (!state.imageLoaded || !state.image) return null;
-    const size = options.fullResolution ? fullResolutionSize() : fitSize();
+    const size = options.fullResolution ? fullResolutionSize() : previewSize();
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = size.width; sourceCanvas.height = size.height;
     const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });

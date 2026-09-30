@@ -95,7 +95,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .mode-tab.active { color: var(--text); background: var(--panel); }
 .mode-tab.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -9px; height: 2px; background: var(--accent); border-radius: 2px; }
 .workspace-actions { gap: 4px; }
-.canvas-stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px; overflow: hidden; background: radial-gradient(circle at 50% 42%, #202329 0, #121417 42%, #0e0f11 100%); }
+.canvas-stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; padding: 10px; overflow: hidden; background: radial-gradient(circle at 50% 42%, #202329 0, #121417 42%, #0e0f11 100%); }
 .canvas-stage::before { content: ""; position: absolute; inset: 18px; border: 1px solid #ffffff05; pointer-events: none; }
 #previewCanvas { display: none; max-width: 100%; max-height: 100%; border-radius: 2px; background: #1a1b1f; box-shadow: 0 24px 70px #0008; image-rendering: auto; }
 #previewCanvas.ready { display: block; }
@@ -192,7 +192,7 @@ body.light .film-card .film-card-copy { text-shadow: 0 1px 8px #0007; }
   .app-shell.right-open .right-panel { transform: translateX(0); }
   .app-shell.left-open .drawer-scrim, .app-shell.right-open .drawer-scrim { display: block; position: fixed; inset: 0; z-index: 15; background: #0009; }
   .mobile-close { display: inline-grid; }
-  .canvas-stage { padding: 14px; }
+  .canvas-stage { padding: 7px; }
   .workspace-header { height: 48px; padding: 0 12px; }
   .workspace-footer { padding: 0 10px; }
   .footer-center { display: none; }
@@ -219,6 +219,6 @@ body.light .film-card .film-card-copy { text-shadow: 0 1px 8px #0007; }
   .top-divider { display: none; }
   .workspace-actions .subtle-button { display: none; }
   .mode-tab { padding-inline: 8px; }
-  .canvas-stage { padding: 7px; }
+  .canvas-stage { padding: 3px; }
   .footer-actions .subtle-button { padding-inline: 5px; }
 }
