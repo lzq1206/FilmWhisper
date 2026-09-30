@@ -32,7 +32,7 @@
 
       <div class="mobile-toolbar">
         <button class="compact-button" data-action="toggle-left">☰ <span>胶片库</span></button>
-        <div class="mobile-mode" id="mobileMode">开发</div>
+        <div class="mobile-mode" id="mobileMode">调整</div>
         <button class="compact-button" data-action="toggle-right">☷ <span>二次调色</span></button>
       </div>
 
@@ -65,13 +65,6 @@
         </aside>
 
         <section class="workspace" id="workspace">
-          <div class="workspace-header">
-            <div class="workspace-actions">
-              <button class="subtle-button" data-action="save">保存</button>
-              <button class="subtle-button" data-action="load">载入</button>
-              <button class="icon-button" data-action="fit" aria-label="适合窗口">⌗</button>
-            </div>
-          </div>
           <div class="canvas-stage" id="canvasStage">
             <div class="empty-state" id="emptyState">
               <div class="empty-icon">◎</div>
@@ -101,8 +94,8 @@
         <aside class="side-panel right-panel" id="rightPanel">
           <div class="panel-header inspector-header">
             <div>
-              <div class="eyebrow" id="modePanelEyebrow">开发</div>
-              <h1 id="modePanelTitle">开发</h1>
+              <div class="eyebrow" id="modePanelEyebrow">调整</div>
+              <h1 id="modePanelTitle">调整</h1>
             </div>
             <button class="icon-button mobile-close" data-action="toggle-right" aria-label="关闭二次调色">×</button>
           </div>
@@ -112,8 +105,8 @@
           </div>
           <div class="inspector-note">主配置负责一次调色；右侧参数为二次调色，默认保持中性。</div>
           <nav class="mode-tabs inspector-mode-tabs" aria-label="调色模式">
-            <button class="mode-tab active" data-mode="develop">开发</button>
-            <button class="mode-tab" data-mode="print">打印</button>
+            <button class="mode-tab active" data-mode="develop">调整</button>
+            <button class="mode-tab" data-mode="print">输出</button>
             <button class="mode-tab" data-mode="crop">裁剪</button>
           </nav>
           <div class="inspector-scroll" id="inspectorScroll">
@@ -243,8 +236,8 @@
       </div>
       <nav class="mobile-bottom-nav" id="mobileBottomNav" aria-label="移动端工作区">
         <button type="button" data-mobile-nav="films"><span>▦</span><small>胶片</small></button>
-        <button type="button" class="active" data-mobile-nav="develop"><span>◒</span><small>开发</small></button>
-        <button type="button" data-mobile-nav="print"><span>▤</span><small>打印</small></button>
+        <button type="button" class="active" data-mobile-nav="develop"><span>◒</span><small>调整</small></button>
+        <button type="button" data-mobile-nav="print"><span>▤</span><small>输出</small></button>
         <button type="button" data-mobile-nav="crop"><span>⌗</span><small>裁剪</small></button>
       </nav>
       <div class="drawer-scrim" id="drawerScrim" data-action="close-drawers"></div>

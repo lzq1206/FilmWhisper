@@ -91,6 +91,7 @@
     ...defaultValues,
     selectedFilm: defaultFilmId,
     mode: "develop",
+    mobileNav: "develop",
     zoom: 1,
     before: false,
     compare: false,
@@ -231,12 +232,12 @@
       favoriteButton.setAttribute("aria-pressed", String(saved));
     }
     zoomLabel.textContent = state.zoom === 1 ? "适合" : `${Math.round(state.zoom * 100)}%`;
-    const modeName = ({ develop: "开发", print: "打印", crop: "裁剪" })[state.mode] || "开发";
+    const modeName = ({ develop: "调整", print: "输出", crop: "裁剪" })[state.mode] || "调整";
     $("#mobileMode").textContent = modeName;
     if (modePanelEyebrow) modePanelEyebrow.textContent = modeName;
     if (modePanelTitle) modePanelTitle.textContent = modeName;
     $$(".mode-tab").forEach((button) => button.classList.toggle("active", button.dataset.mode === state.mode));
-    $$('[data-mobile-nav]').forEach((button) => button.classList.toggle("active", button.dataset.mobileNav === state.mode));
+    $$('[data-mobile-nav]').forEach((button) => button.classList.toggle("active", button.dataset.mobileNav === state.mobileNav));
     syncModeSections();
     document.body.classList.toggle("before-mode", state.before);
   }
@@ -1711,11 +1712,12 @@
 
   function setMode(mode) {
     state.mode = mode;
-    const modeNames = { develop: "开发", print: "打印", crop: "裁剪" };
+    state.mobileNav = mode;
+    const modeNames = { develop: "调整", print: "输出", crop: "裁剪" };
     if (mode === "print") openSections(["screen", "frame", "output"]);
     if (mode === "crop") openSections(["crop"]);
     syncControls();
-    showToast(`${modeNames[mode] || "开发"}模式`);
+    showToast(`${modeNames[mode] || "调整"}模式`);
   }
 
   function openSections(names) {
@@ -1752,7 +1754,13 @@
         break;
       }
       case "fullscreen": document.documentElement.requestFullscreen?.(); break;
-      case "toggle-left": shell.classList.toggle("left-open"); break;
+      case "toggle-left":
+        shell.classList.toggle("left-open");
+        if (shell.classList.contains("left-open")) {
+          state.mobileNav = "films";
+          syncControls();
+        }
+        break;
       case "toggle-right": shell.classList.toggle("right-open"); break;
       case "close-drawers": shell.classList.remove("left-open", "right-open"); break;
       default: showToast("功能已准备");
@@ -1769,6 +1777,8 @@
   $$('[data-mobile-nav]').forEach((button) => button.addEventListener("click", () => {
     const target = button.dataset.mobileNav;
     if (target === "films") {
+      state.mobileNav = "films";
+      syncControls();
       shell.classList.remove("right-open");
       shell.classList.add("left-open");
       return;
