@@ -74,6 +74,9 @@
               <div class="format-hint">JPG · PNG · WebP · TIFF · DNG · NEF · CR3 · ARW · 3FR</div>
             </div>
             <canvas id="previewCanvas" aria-label="照片预览"></canvas>
+            <div class="crop-overlay hidden" id="cropOverlay" aria-label="手动裁剪区域">
+              <div class="crop-selection" id="cropSelection"></div>
+            </div>
             <div class="compare-line hidden" id="compareLine"><span>原图</span><span>编辑后</span></div>
             <div class="stage-toast" id="stageToast"></div>
           </div>
@@ -163,9 +166,9 @@
               </div>
             </section>
             <section class="inspector-section" data-section="frame">
-              <button class="section-heading" type="button"><span>画框</span><span class="section-chevron">⌄</span></button>
+              <button class="section-heading" type="button"><span>边框</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="frameStyle">边框</label><select id="frameStyle" data-field="frameStyle"><option value="无">无</option><option value="Carrier Border">片盒边框</option><option value="Emulsion Border">乳剂边框</option><option value="White Mount">白色装裱</option><option value="Black Mount">黑色装裱</option><option value="Square Post">方形贴片</option><option value="Portrait Post">竖幅贴片</option><option value="Story">故事比例</option></select></div>
+                <div class="select-row"><label for="frameStyle">边框</label><select id="frameStyle" data-field="frameStyle"><option value="black">1、黑色边框</option><option value="white">2、白色边框</option><option value="gray">3、灰色边框</option><option value="polaroid">4、宝丽来式</option><option value="square">5、方形边框</option></select></div>
                 <div class="control-row"><label for="frameSize">边框大小</label><output data-output="frameSize">0</output><input id="frameSize" data-field="frameSize" type="range" min="0" max="100" step="1" value="0" /></div>
               </div>
             </section>
@@ -218,6 +221,8 @@
               <button class="section-heading" type="button"><span>裁剪与旋转</span><span class="section-chevron">⌄</span></button>
               <div class="section-body crop-grid">
                 <div class="select-row"><label for="aspect">比例</label><select id="aspect" data-field="aspect"><option value="free">自由</option><option value="1">1 : 1</option><option value="1.5">3 : 2</option><option value="1.7778">16 : 9</option><option value="0.8">4 : 5</option><option value="0.5625">9 : 16</option></select></div>
+                <div class="crop-help">在主图上拖动选择裁剪区域</div>
+                <button class="tool-button" data-action="reset-crop">重置裁剪区域</button>
                 <div class="control-row"><label for="straighten">校正</label><output data-output="straighten">0°</output><input id="straighten" data-field="straighten" type="range" min="-10" max="10" step="0.1" value="0" /></div>
                 <div class="button-grid"><button class="tool-button" data-action="rotate-left">↺ 90°</button><button class="tool-button" data-action="rotate-right">↻ 90°</button><button class="tool-button" data-action="flip-h">↔ 翻转</button><button class="tool-button" data-action="fit">适合画布</button></div>
               </div>

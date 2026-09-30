@@ -19,6 +19,8 @@
   const zoomLabel = $("#zoomLabel");
   const stageToast = $("#stageToast");
   const compareLine = $("#compareLine");
+  const cropOverlay = $("#cropOverlay");
+  const cropSelection = $("#cropSelection");
   const modePanelEyebrow = $("#modePanelEyebrow");
   const modePanelTitle = $("#modePanelTitle");
   const mobileBottomNav = $("#mobileBottomNav");
@@ -66,7 +68,7 @@
     aspect: "free",
     filmFormat: "35mm",
     filter: "无",
-    frameStyle: "无",
+    frameStyle: "black",
     outputFormat: "image/jpeg",
     quality: 92,
     outputMedium: "Photo",
@@ -92,6 +94,7 @@
     selectedFilm: defaultFilmId,
     mode: "develop",
     mobileNav: "develop",
+    cropRect: null,
     zoom: 1,
     before: false,
     compare: false,
@@ -119,6 +122,7 @@
   let imageLoadToken = 0;
   let toastTimer;
   let compareCanvas = null;
+  let cropPointer = null;
   let lastCanvasSize = { width: 0, height: 0 };
   const lutConfig = window.FILM_LUT_CONFIG || null;
   const lutState = { buffer: null, size: lutConfig?.size || 32, count: lutConfig?.count || 0, ready: false, error: null };
@@ -162,6 +166,7 @@
       selectedFilm: state.selectedFilm,
       rotation: state.rotation,
       flipH: state.flipH,
+      cropRect: state.cropRect ? { ...state.cropRect } : null,
     };
   }
 
@@ -201,7 +206,7 @@
 
   function resetAll() {
     pushHistory();
-    Object.assign(state, defaultValues, { selectedFilm: defaultFilmId, rotation: 0, flipH: false, before: false, compare: false });
+    Object.assign(state, defaultValues, { selectedFilm: defaultFilmId, rotation: 0, flipH: false, before: false, compare: false, cropRect: null });
     syncControls();
     renderFilmCards();
     render();
@@ -246,9 +251,10 @@
     const visible = {
       develop: new Set(["light", "color", "film", "grain", "halation", "lens", "regional", "grade", "selective", "histogram"]),
       print: new Set(["screen", "frame", "output", "histogram"]),
-      crop: new Set(["crop", "frame", "histogram"]),
+      crop: new Set(["crop"]),
     }[state.mode] || new Set();
     $$('[data-section]').forEach((section) => section.classList.toggle("mode-hidden", !visible.has(section.dataset.section)));
+    updateCropOverlay();
   }
 
   function renderFilmCards() {
@@ -995,6 +1001,24 @@
     };
   }
 
+  function cropCanvasRect(source, rect) {
+    if (!rect) return source;
+    const x = Math.max(0, Math.min(0.999, Number(rect.x) || 0));
+    const y = Math.max(0, Math.min(0.999, Number(rect.y) || 0));
+    const width = Math.max(0.01, Math.min(1 - x, Number(rect.width) || 1));
+    const height = Math.max(0.01, Math.min(1 - y, Number(rect.height) || 1));
+    const crop = document.createElement("canvas");
+    crop.width = Math.max(1, Math.round(source.width * width));
+    crop.height = Math.max(1, Math.round(source.height * height));
+    crop.getContext("2d").drawImage(
+      source,
+      Math.round(source.width * x), Math.round(source.height * y),
+      Math.max(1, Math.round(source.width * width)), Math.max(1, Math.round(source.height * height)),
+      0, 0, crop.width, crop.height,
+    );
+    return crop;
+  }
+
   function cropCanvas(source, ratio) {
     if (!ratio || ratio === "free") return source;
     const current = source.width / source.height;
@@ -1008,7 +1032,9 @@
   }
 
   function transformCanvas(source, values) {
-    let working = cropCanvas(source, values.aspect);
+    // A manually drawn crop is defined in the visible, post-rotation image
+    // space.  Preset aspect crops keep the original centered behavior.
+    let working = state.cropRect ? source : cropCanvas(source, values.aspect);
     const turns = ((state.rotation % 360) + 360) % 360;
     const swap = turns === 90 || turns === 270;
     const output = document.createElement("canvas");
@@ -1031,27 +1057,69 @@
       rctx.drawImage(output, -output.width / 2, -output.height / 2);
       transformed = rotated;
     }
-    if (values.frameStyle === "无" || Number(values.frameSize) <= 0) return transformed;
-    const frameSize = Math.max(1, Math.round(Math.min(transformed.width, transformed.height) * Number(values.frameSize) / 100 * 0.12));
-    const padding = Math.max(1, Math.round(frameSize * 0.72));
+    if (state.cropRect) transformed = cropCanvasRect(transformed, state.cropRect);
+    return renderFrame(transformed, values.frameStyle, values.frameSize);
+  }
+
+  function renderFrame(transformed, frameStyle, frameSizeValue) {
+    if (!frameStyle || Number(frameSizeValue) <= 0) return transformed;
+    const styleMap = {
+      "Black Mount": "black",
+      "White Mount": "white",
+      "Square Post": "square",
+      "Portrait Post": "polaroid",
+      Story: "polaroid",
+    };
+    const style = styleMap[frameStyle] || frameStyle;
+    const border = Math.max(1, Math.round(Math.min(transformed.width, transformed.height) * Number(frameSizeValue) / 100 * 0.12));
+    const background = {
+      black: "#121417",
+      white: "#f4f0e8",
+      gray: "#85878a",
+      polaroid: "#f4efe5",
+      square: "#f4f0e8",
+    }[style] || "#121417";
     const framed = document.createElement("canvas");
-    const extraVertical = values.frameStyle === "Story" ? Math.round(frameSize * 0.45) : 0;
-    const extraHorizontal = values.frameStyle === "Portrait Post" ? Math.round(frameSize * 0.2) : 0;
-    framed.width = transformed.width + padding * 2 + extraHorizontal * 2;
-    framed.height = transformed.height + padding * 2 + extraVertical * 2;
     const frameContext = framed.getContext("2d");
-    const isWhite = values.frameStyle === "White Mount" || values.frameStyle === "Square Post" || values.frameStyle === "Portrait Post" || values.frameStyle === "Story";
-    const background = isWhite ? "#f1ede4" : values.frameStyle === "Black Mount" ? "#131416" : "#2c2724";
+
+    if (style === "square") {
+      const side = Math.max(transformed.width, transformed.height) + border * 2;
+      framed.width = side;
+      framed.height = side;
+      frameContext.fillStyle = background;
+      frameContext.fillRect(0, 0, side, side);
+      frameContext.drawImage(transformed, (side - transformed.width) / 2, (side - transformed.height) / 2);
+      return framed;
+    }
+
+    if (style === "polaroid") {
+      const frameRatio = 4 / 5;
+      const minimumWidth = transformed.width + border * 2;
+      const minimumHeight = transformed.height + border * 3;
+      let width = Math.max(minimumWidth, Math.ceil(minimumHeight * frameRatio));
+      let height = Math.ceil(width / frameRatio);
+      if (height < minimumHeight) {
+        height = minimumHeight;
+        width = Math.ceil(height * frameRatio);
+      }
+      framed.width = width;
+      framed.height = height;
+      frameContext.fillStyle = background;
+      frameContext.fillRect(0, 0, width, height);
+      const innerWidth = width - border * 2;
+      const innerHeight = height - border * 3;
+      const scale = Math.min(innerWidth / transformed.width, innerHeight / transformed.height);
+      const imageWidth = Math.max(1, Math.round(transformed.width * scale));
+      const imageHeight = Math.max(1, Math.round(transformed.height * scale));
+      frameContext.drawImage(transformed, (width - imageWidth) / 2, border, imageWidth, imageHeight);
+      return framed;
+    }
+
+    framed.width = transformed.width + border * 2;
+    framed.height = transformed.height + border * 2;
     frameContext.fillStyle = background;
     frameContext.fillRect(0, 0, framed.width, framed.height);
-    const imageX = padding + extraHorizontal;
-    const imageY = padding + extraVertical;
-    frameContext.drawImage(transformed, imageX, imageY);
-    if (values.frameStyle === "Carrier Border" || values.frameStyle === "Emulsion Border") {
-      frameContext.strokeStyle = values.frameStyle === "Carrier Border" ? "#a88a68" : "#ddd3c4";
-      frameContext.lineWidth = Math.max(1, Math.round(frameSize * 0.18));
-      frameContext.strokeRect(imageX + frameContext.lineWidth / 2, imageY + frameContext.lineWidth / 2, transformed.width - frameContext.lineWidth, transformed.height - frameContext.lineWidth);
-    }
+    frameContext.drawImage(transformed, border, border);
     return framed;
   }
 
@@ -1269,11 +1337,77 @@
     return compareCanvas;
   }
 
+  function defaultCropRect() {
+    if (!canvas.width || !canvas.height || state.aspect === "free") return { x: 0, y: 0, width: 1, height: 1 };
+    const targetRatio = Number(state.aspect);
+    const sourceRatio = canvas.width / canvas.height;
+    if (!Number.isFinite(targetRatio) || targetRatio <= 0) return { x: 0, y: 0, width: 1, height: 1 };
+    if (sourceRatio > targetRatio) {
+      const width = targetRatio / sourceRatio;
+      return { x: (1 - width) / 2, y: 0, width, height: 1 };
+    }
+    const height = sourceRatio / targetRatio;
+    return { x: 0, y: (1 - height) / 2, width: 1, height };
+  }
+
+  function cropRectFromDrag(startX, startY, endX, endY) {
+    const dx = endX - startX;
+    const dy = endY - startY;
+    let width = Math.max(0.02, Math.abs(dx));
+    let height = Math.max(0.02, Math.abs(dy));
+    const targetRatio = state.aspect === "free" ? null : Number(state.aspect);
+    if (Number.isFinite(targetRatio) && targetRatio > 0) {
+      if (width / height > targetRatio) height = width / targetRatio;
+      else width = height * targetRatio;
+    }
+    let x = dx < 0 ? startX - width : startX;
+    let y = dy < 0 ? startY - height : startY;
+    x = Math.max(0, Math.min(1 - width, x));
+    y = Math.max(0, Math.min(1 - height, y));
+    if (width > 1) { width = 1; x = 0; }
+    if (height > 1) { height = 1; y = 0; }
+    return { x, y, width, height };
+  }
+
+  function updateCropOverlay() {
+    if (!cropOverlay || !cropSelection) return;
+    const visible = state.mode === "crop" && state.imageLoaded && canvas.classList.contains("ready") && canvas.width > 0 && canvas.height > 0;
+    if (!visible) {
+      cropOverlay.classList.add("hidden");
+      return;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    if (canvasRect.width < 1 || canvasRect.height < 1) {
+      cropOverlay.classList.add("hidden");
+      return;
+    }
+    cropOverlay.classList.remove("hidden");
+    cropOverlay.style.left = `${canvasRect.left - stageRect.left}px`;
+    cropOverlay.style.top = `${canvasRect.top - stageRect.top}px`;
+    cropOverlay.style.width = `${canvasRect.width}px`;
+    cropOverlay.style.height = `${canvasRect.height}px`;
+    const rect = state.cropRect || defaultCropRect();
+    cropSelection.style.left = `${Math.max(0, Math.min(1, rect.x)) * 100}%`;
+    cropSelection.style.top = `${Math.max(0, Math.min(1, rect.y)) * 100}%`;
+    cropSelection.style.width = `${Math.max(0.01, Math.min(1, rect.width)) * 100}%`;
+    cropSelection.style.height = `${Math.max(0.01, Math.min(1, rect.height)) * 100}%`;
+  }
+
+  function cropPointerPosition(event) {
+    const rect = cropOverlay.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))),
+    };
+  }
+
   function render() {
     if (!state.imageLoaded || !state.image) {
       canvas.classList.remove("ready");
       emptyState.classList.remove("hidden");
       renderStatus.textContent = "等待图片";
+      updateCropOverlay();
       return;
     }
     emptyState.classList.add("hidden");
@@ -1304,6 +1438,7 @@
         canvas.style.padding = "0";
         lastCanvasSize = { width: canvas.width, height: canvas.height };
         renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${activeFilmLabel.textContent}`;
+        updateCropOverlay();
       } catch (error) {
         if (token === renderToken) renderStatus.textContent = "渲染失败 · 请重试";
         console.error(error);
@@ -1331,6 +1466,14 @@
       pushHistory();
     }
     state[key] = control.type === "range" ? Number(control.value) : control.value;
+    if (key === "aspect") state.cropRect = null;
+    if (key === "frameStyle" && Number(state.frameSize) <= 0) {
+      state.frameSize = 8;
+      const frameSizeControl = $("#frameSize");
+      const frameSizeOutput = $('[data-output="frameSize"]');
+      if (frameSizeControl) frameSizeControl.value = "8";
+      if (frameSizeOutput) frameSizeOutput.textContent = formatValue("frameSize", 8);
+    }
     const output = $(`[data-output="${key}"]`);
     if (output) output.textContent = formatValue(key, state[key]);
     render();
@@ -1755,6 +1898,13 @@
       case "zoom-in": state.zoom = Math.min(2.5, state.zoom + 0.25); syncControls(); render(); break;
       case "zoom-out": state.zoom = Math.max(0.5, state.zoom - 0.25); syncControls(); render(); break;
       case "fit": state.zoom = 1; syncControls(); render(); showToast("已适合画布"); break;
+      case "reset-crop":
+        pushHistory();
+        state.cropRect = null;
+        syncControls();
+        render();
+        showToast("已重置裁剪区域");
+        break;
       case "rotate-left": pushHistory(); state.rotation = (state.rotation + 270) % 360; render(); break;
       case "rotate-right": pushHistory(); state.rotation = (state.rotation + 90) % 360; render(); break;
       case "flip-h": pushHistory(); state.flipH = !state.flipH; render(); break;
@@ -1816,6 +1966,32 @@
   stage.addEventListener("dragover", (event) => { event.preventDefault(); stage.classList.add("dragging"); });
   stage.addEventListener("dragleave", () => stage.classList.remove("dragging"));
   stage.addEventListener("drop", (event) => { event.preventDefault(); stage.classList.remove("dragging"); loadFile(event.dataTransfer.files?.[0]); });
+  cropOverlay?.addEventListener("pointerdown", (event) => {
+    if (state.mode !== "crop" || !state.imageLoaded) return;
+    const position = cropPointerPosition(event);
+    pushHistory();
+    cropPointer = { pointerId: event.pointerId, startX: position.x, startY: position.y };
+    state.cropRect = cropRectFromDrag(position.x, position.y, position.x, position.y);
+    cropOverlay.setPointerCapture?.(event.pointerId);
+    updateCropOverlay();
+    event.preventDefault();
+  });
+  cropOverlay?.addEventListener("pointermove", (event) => {
+    if (!cropPointer || cropPointer.pointerId !== event.pointerId) return;
+    const position = cropPointerPosition(event);
+    state.cropRect = cropRectFromDrag(cropPointer.startX, cropPointer.startY, position.x, position.y);
+    updateCropOverlay();
+    event.preventDefault();
+  });
+  const finishCropPointer = (event) => {
+    if (!cropPointer || cropPointer.pointerId !== event.pointerId) return;
+    cropOverlay.releasePointerCapture?.(event.pointerId);
+    cropPointer = null;
+    render();
+    showToast("裁剪区域已更新");
+  };
+  cropOverlay?.addEventListener("pointerup", finishCropPointer);
+  cropOverlay?.addEventListener("pointercancel", finishCropPointer);
   $("#themeToggle").addEventListener("click", () => { document.body.classList.toggle("light"); localStorage.setItem("filmwhisper-theme", document.body.classList.contains("light") ? "light" : "dark"); });
   $("#brandMenu").addEventListener("click", () => showToast("快捷键：O 打开 · Space 原图 · R 重置"));
   document.addEventListener("keydown", (event) => {
