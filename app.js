@@ -14,6 +14,7 @@
   const savedList = $("#savedList");
   const filmSearch = $("#filmSearch");
   const activeFilmLabel = $("#activeFilmLabel");
+  const favoriteButton = $('[data-action="favorite"]');
   const renderStatus = $("#renderStatus");
   const zoomLabel = $("#zoomLabel");
   const stageToast = $("#stageToast");
@@ -77,6 +78,15 @@
     .map((profile) => ({ ...profile, values: {} }));
   const defaultFilmId = filmPresets[0]?.id || "acros-100";
 
+  function readSavedFilms() {
+    try {
+      const value = JSON.parse(localStorage.getItem("filmwhisper-saved") || "[]");
+      return Array.isArray(value) ? value.filter((id) => filmPresets.some((film) => film.id === id)) : [];
+    } catch {
+      return [];
+    }
+  }
+
   const state = {
     ...defaultValues,
     selectedFilm: defaultFilmId,
@@ -101,8 +111,7 @@
     imageName: "",
     history: [],
     historyIndex: -1,
-    savedFilms: JSON.parse(localStorage.getItem("filmwhisper-saved") || "[]")
-      .filter((id) => filmPresets.some((film) => film.id === id)),
+    savedFilms: readSavedFilms(),
   };
 
   let renderToken = 0;
@@ -213,7 +222,14 @@
       const key = output.dataset.output;
       if (state[key] !== undefined) output.textContent = formatValue(key, state[key]);
     });
-    activeFilmLabel.textContent = filmPresets.find((film) => film.id === state.selectedFilm)?.name || filmPresets[0]?.name || "ACROS 100";
+    const activeFilm = filmPresets.find((film) => film.id === state.selectedFilm) || filmPresets[0];
+    activeFilmLabel.textContent = activeFilm?.name || "ACROS 100";
+    if (favoriteButton) {
+      const saved = state.savedFilms.includes(state.selectedFilm);
+      favoriteButton.textContent = saved ? "★" : "☆";
+      favoriteButton.setAttribute("aria-label", saved ? "取消收藏" : "收藏胶片");
+      favoriteButton.setAttribute("aria-pressed", String(saved));
+    }
     zoomLabel.textContent = state.zoom === 1 ? "适合" : `${Math.round(state.zoom * 100)}%`;
     const modeName = ({ develop: "开发", print: "打印", crop: "裁剪" })[state.mode] || "开发";
     $("#mobileMode").textContent = modeName;
@@ -241,10 +257,18 @@
     filmGrid.innerHTML = filtered.map((film) => `
       <button class="film-card ${state.selectedFilm === film.id ? "active" : ""}" data-film="${film.id}" style="--swatch:${film.swatch}" aria-label="选择 ${film.name}">
         <span class="film-card-preview" aria-hidden="true"><img src="${filmPreviewSources.get(film.id) || `film-previews/${film.id}.jpg`}" alt="" loading="lazy" decoding="async"></span>
-        <span class="film-card-star">${state.savedFilms.includes(film.id) ? "★" : "☆"}</span>
+        <span class="film-card-star" data-favorite-film="${film.id}" title="${state.savedFilms.includes(film.id) ? "取消收藏" : "收藏"} ${film.name}" aria-label="${state.savedFilms.includes(film.id) ? "取消收藏" : "收藏"} ${film.name}">${state.savedFilms.includes(film.id) ? "★" : "☆"}</span>
         <span class="film-card-copy"><span class="film-card-name">${film.name}</span><span class="film-card-meta">${film.meta}</span></span>
       </button>`).join("");
-    $$('[data-film]', filmGrid).forEach((card) => card.addEventListener("click", () => selectFilm(card.dataset.film)));
+    $$('[data-film]', filmGrid).forEach((card) => card.addEventListener("click", (event) => {
+      const favorite = event.target.closest("[data-favorite-film]");
+      if (favorite) {
+        event.preventDefault();
+        toggleFavorite(favorite.dataset.favoriteFilm);
+        return;
+      }
+      selectFilm(card.dataset.film);
+    }));
     if (filmGrid.parentElement) filmGrid.parentElement.scrollTop = scrollTop;
     renderSavedFilms();
   }
@@ -1669,13 +1693,20 @@
     } catch { showToast("保存的设置无法读取"); }
   }
 
-  function toggleFavorite() {
-    const index = state.savedFilms.indexOf(state.selectedFilm);
-    if (index === -1) state.savedFilms.push(state.selectedFilm);
+  function toggleFavorite(id = state.selectedFilm) {
+    const film = filmPresets.find((item) => item.id === id);
+    if (!film) return showToast("没有可收藏的胶片");
+    const index = state.savedFilms.indexOf(id);
+    if (index === -1) state.savedFilms.push(id);
     else state.savedFilms.splice(index, 1);
-    localStorage.setItem("filmwhisper-saved", JSON.stringify(state.savedFilms));
+    try {
+      localStorage.setItem("filmwhisper-saved", JSON.stringify(state.savedFilms));
+    } catch {
+      // Keep the in-memory collection usable when storage is blocked.
+    }
+    syncControls();
     renderFilmCards();
-    showToast(index === -1 ? "已加入收藏" : "已取消收藏");
+    showToast(index === -1 ? `${film.name} 已加入收藏` : `${film.name} 已取消收藏`);
   }
 
   function setMode(mode) {
