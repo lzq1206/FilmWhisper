@@ -255,12 +255,16 @@
     const scrollTop = filmGrid.parentElement?.scrollTop || 0;
     const query = filmSearch.value.trim().toLowerCase();
     const filtered = filmPresets.filter((film) => `${film.name} ${film.meta}`.toLowerCase().includes(query));
-    filmGrid.innerHTML = filtered.map((film) => `
+    filmGrid.innerHTML = filtered.map((film) => {
+      const saved = state.savedFilms.includes(film.id);
+      const preview = filmPreviewSources.get(film.id) || `film-previews/${film.id}.jpg`;
+      return `
       <button class="film-card ${state.selectedFilm === film.id ? "active" : ""}" data-film="${film.id}" style="--swatch:${film.swatch}" aria-label="选择 ${film.name}">
-        <span class="film-card-preview" aria-hidden="true"><img src="${filmPreviewSources.get(film.id) || `film-previews/${film.id}.jpg`}" alt="" loading="lazy" decoding="async"></span>
-        <span class="film-card-star" data-favorite-film="${film.id}" title="${state.savedFilms.includes(film.id) ? "取消收藏" : "收藏"} ${film.name}" aria-label="${state.savedFilms.includes(film.id) ? "取消收藏" : "收藏"} ${film.name}">${state.savedFilms.includes(film.id) ? "★" : "☆"}</span>
+        <span class="film-card-preview" aria-hidden="true"><img src="${preview}" alt="" loading="lazy" decoding="async"></span>
+        <span class="film-card-star${saved ? " saved" : ""}" data-favorite-film="${film.id}" title="${saved ? "取消收藏" : "收藏"} ${film.name}" aria-label="${saved ? "取消收藏" : "收藏"} ${film.name}">${saved ? "★" : "☆"}</span>
         <span class="film-card-copy"><span class="film-card-name">${film.name}</span><span class="film-card-meta">${film.meta}</span></span>
-      </button>`).join("");
+      </button>`;
+    }).join("");
     $$('[data-film]', filmGrid).forEach((card) => card.addEventListener("click", (event) => {
       const favorite = event.target.closest("[data-favorite-film]");
       if (favorite) {
@@ -281,7 +285,12 @@
     }
     savedList.innerHTML = state.savedFilms.map((id) => {
       const film = filmPresets.find((item) => item.id === id);
-      return `<button class="saved-item" data-saved-film="${id}"><span><strong>${film?.name || id}</strong><span>${film?.meta || "色彩配置"}</span></span><span>★</span></button>`;
+      const preview = filmPreviewSources.get(id) || `film-previews/${id}.jpg`;
+      return `<button class="saved-item" data-saved-film="${id}">
+        <span class="saved-item-preview" aria-hidden="true"><img src="${preview}" alt="" loading="lazy" decoding="async"></span>
+        <span class="saved-item-copy"><strong>${film?.name || id}</strong><span>${film?.meta || "色彩配置"}</span></span>
+        <span class="saved-item-star" aria-hidden="true">★</span>
+      </button>`;
     }).join("");
     $$('[data-saved-film]', savedList).forEach((card) => card.addEventListener("click", () => selectFilm(card.dataset.savedFilm)));
   }
@@ -1093,6 +1102,14 @@
     return output;
   }
 
+  function previewThumbnailSize(maxLongEdge = 180) {
+    const width = Number(state.rawImage?.width || state.deepImage?.width || state.image?.naturalWidth || state.image?.width);
+    const height = Number(state.rawImage?.height || state.deepImage?.height || state.image?.naturalHeight || state.image?.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return { width: maxLongEdge, height: 112 };
+    if (width >= height) return { width: maxLongEdge, height: Math.max(1, Math.round(maxLongEdge * height / width)) };
+    return { width: Math.max(1, Math.round(maxLongEdge * width / height)), height: maxLongEdge };
+  }
+
   async function generateFilmPreviews() {
     const token = ++filmPreviewToken;
     if (!state.imageLoaded || !state.image) return;
@@ -1101,7 +1118,7 @@
       if (token !== filmPreviewToken) return;
     }
     if (!lutState.ready) return;
-    const size = { width: 180, height: 112 };
+    const size = previewThumbnailSize();
     let source = null;
     let sourceType = "rgba8";
     if (state.rawImage) {
