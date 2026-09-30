@@ -20,6 +20,16 @@ const ADOBE_RGB_TO_XYZ = [
   [0.29734497525053605, 0.6273635662554661, 0.07529145849399788],
   [0.02703136138641234, 0.07068885253582723, 0.9913375368376388],
 ];
+const DISPLAY_P3_TO_XYZ = [
+  [0.4865709486482162, 0.26566769316909306, 0.1982172852343625],
+  [0.2289745640697488, 0.6917385218365064, 0.079286914093745],
+  [0, 0.04511338185890264, 1.043944368900976],
+];
+const REC2020_TO_XYZ = [
+  [0.6369580483012914, 0.14461690358620832, 0.1688809751641721],
+  [0.2627002120112671, 0.6779980715188708, 0.05930171646986196],
+  [0, 0.028072693049087428, 1.060985057710791],
+];
 
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 
@@ -44,12 +54,24 @@ function adobeRgbDecode(value) {
   return Math.max(0, value) ** 2.19921875;
 }
 
+function rec2020Decode(value) {
+  const positive = Math.max(0, value);
+  const alpha = 1.09929682680944;
+  const beta = 0.018053968510807;
+  return positive < beta * 4.5
+    ? positive / 4.5
+    : ((positive + 1 - alpha) / alpha) ** (1 / 0.45);
+}
+
 function inputSettings(colorSpace) {
-  const adobe = colorSpace === "adobe-rgb";
-  return {
-    matrix: adobe ? ADOBE_RGB_TO_XYZ : workerState.matrices.srgbToXyz,
-    decode: adobe ? adobeRgbDecode : srgbDecode,
+  const profiles = {
+    "adobe-rgb": { matrix: ADOBE_RGB_TO_XYZ, decode: adobeRgbDecode, white: "d65" },
+    "display-p3": { matrix: DISPLAY_P3_TO_XYZ, decode: srgbDecode, white: "d65" },
+    "prophoto-rgb": { matrix: workerState.matrices.prophotoToXyz, decode: prophotoDecode, white: "d50" },
+    rec2020: { matrix: REC2020_TO_XYZ, decode: rec2020Decode, white: "d65" },
+    srgb: { matrix: workerState.matrices.srgbToXyz, decode: srgbDecode, white: "d65" },
   };
+  return profiles[colorSpace] || profiles.srgb;
 }
 
 function prophotoEncode(value) {
@@ -157,18 +179,31 @@ function hashNoise(x, y, seed) {
 function processSecondary(source, width, height, values = {}, startRow = 0, fullHeight = height) {
   const secondaryFields = [
     "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
-    "saturation", "vibrance", "grain", "bleach", "age", "halation", "vignette", "distortion",
+    "saturation", "vibrance", "grain", "bleach", "age", "halation", "halationReturn", "haloHue", "vignette", "distortion",
+    "push", "regionWarmth", "regionTint", "regionLevel", "gradeContrast", "gradeSaturation", "screenExposure", "printerPreflash",
   ];
   const hasSecondaryWork = values.filter !== "无"
-    || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001);
+    || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001)
+    || values.paperGrade !== "Reference"
+    || values.enlarger !== "Diffuser"
+    || values.negativeViewing !== "Reference Exposure"
+    || values.outputMedium !== "Photo"
+    || values.viewingIlluminant !== "D50";
   if (!hasSecondaryWork) return source;
 
   const output = new Uint8ClampedArray(source);
-  const exposure = Math.pow(2, Number(values.exposure) || 0);
-  const contrast = 1 + (Number(values.contrast) || 0) / 100;
+  const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
+  const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0)
+    + (values.negativeViewing === "Auto Levels" ? 0.08 : 0));
+  const contrast = (1 + (Number(values.contrast) || 0) / 100)
+    * (values.paperGrade === "Hard" ? 1.08 : values.paperGrade === "Soft" ? 0.92 : 1)
+    * (values.enlarger === "Condenser" ? 1.04 : values.enlarger === "Diffuser" ? 0.97 : 1)
+    * (values.negativeViewing === "Graded Print" ? 1.06 : values.negativeViewing === "Auto Levels" ? 0.98 : 1)
+    * (values.outputMedium === "Print" ? 1.04 : values.outputMedium === "Screen" ? 0.98 : 1);
   const highlight = (Number(values.highlights) || 0) / 100;
   const shadow = (Number(values.shadows) || 0) / 100;
-  const temp = (Number(values.temperature) || 0) / 100;
+  const temp = (Number(values.temperature) || 0) / 100
+    + (values.viewingIlluminant === "Tungsten 2856 K" ? -0.12 : values.viewingIlluminant === "Daylight 5500 K" ? 0.03 : 0);
   const tint = (Number(values.tint) || 0) / 100;
   const sat = 1 + (Number(values.saturation) || 0) / 100;
   const vib = (Number(values.vibrance) || 0) / 100;
@@ -201,6 +236,17 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       red += temp * 0.11 - tint * 0.035;
       green += tint * 0.08;
       blue -= temp * 0.11 - tint * 0.035;
+      const regionWeight = values.regionTarget === "Highlights"
+        ? Math.max(0, Math.min(1, luminance))
+        : values.regionTarget === "Midtones"
+          ? Math.max(0, 1 - Math.abs(luminance - 0.5) * 2.4)
+          : Math.max(0, 1 - luminance);
+      const regionAmount = regionWeight * 0.85;
+      red += (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.12;
+      green += (Number(values.regionTint) || 0) / 100 * regionAmount * 0.08;
+      blue -= (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.10;
+      const regionLevel = (Number(values.regionLevel) || 0) / 100 * regionAmount;
+      red *= Math.pow(2, regionLevel * 0.35); green *= Math.pow(2, regionLevel * 0.35); blue *= Math.pow(2, regionLevel * 0.35);
       if (filter === "Warm 1/8" || filter === "Warm 1/4") {
         const strength = filter === "Warm 1/4" ? 0.055 : 0.028;
         red += strength; green += strength * 0.35; blue -= strength * 0.75;
@@ -216,6 +262,49 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       const hsl = rgbToHsl(Math.max(0, red), Math.max(0, green), Math.max(0, blue));
       const vivid = vib >= 0 ? vib * (1 - hsl[1]) : vib;
       [red, green, blue] = hslToRgb(hsl[0], Math.max(0, Math.min(1, hsl[1] * sat + vivid)), hsl[2]);
+      // Use selective controls as a real soft mask for the grade controls.
+      // Color/RGB is the neutral global-grade state.
+      let selectiveMask = 1;
+      const selectiveIsCustom = values.selectiveSubject !== "Color" || values.selectiveSpace !== "RGB";
+      if (selectiveIsCustom) {
+        const feather = Math.max(0, Math.min(1, Number(values.selectiveFeather ?? 50) / 100));
+        const chroma = Math.max(0, Math.min(1, hsl[1]));
+        const baseMask = values.selectiveSubject === "Light"
+          ? hsl[2]
+          : values.selectiveSubject === "Range"
+            ? Math.max(0, 1 - Math.abs(hsl[2] - 0.5) * 2.2)
+            : values.selectiveSubject === "Softness"
+              ? 1 - chroma
+              : values.selectiveSubject === "Edge"
+                ? Math.min(1, chroma * 1.5)
+                : chroma;
+        const spaceMask = values.selectiveSpace === "Luma" || values.selectiveSpace === "OKLab L"
+          ? hsl[2]
+          : values.selectiveSpace === "Chroma" || values.selectiveSpace === "OKLab a/b"
+            ? chroma
+            : baseMask;
+        selectiveMask = Math.max(0, Math.min(1, (spaceMask * (0.45 + feather * 0.55)) + (1 - feather) * 0.2));
+      }
+      const gradeSat = 1 + ((Number(values.gradeSaturation) || 0) / 100) * selectiveMask;
+      if (Math.abs(Number(values.gradeSaturation) || 0) > 0.0001) {
+        const gradeGray = (red + green + blue) / 3;
+        red = gradeGray + (red - gradeGray) * gradeSat;
+        green = gradeGray + (green - gradeGray) * gradeSat;
+        blue = gradeGray + (blue - gradeGray) * gradeSat;
+      }
+      const gradeContrast = 1 + ((Number(values.gradeContrast) || 0) / 100) * selectiveMask;
+      if (Math.abs(Number(values.gradeContrast) || 0) > 0.0001) {
+        if (["Luma", "OKLab L"].includes(values.gradeCurve)) {
+          const gradeLum = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+          const adjusted = (gradeLum - 0.5) * gradeContrast + 0.5;
+          const factor = gradeLum > 0.0001 ? adjusted / gradeLum : 1;
+          red *= factor; green *= factor; blue *= factor;
+        } else {
+          red = (red - 0.5) * gradeContrast + 0.5;
+          green = (green - 0.5) * gradeContrast + 0.5;
+          blue = (blue - 0.5) * gradeContrast + 0.5;
+        }
+      }
       const gray = (red + green + blue) / 3;
       red = red * (1 - bleach * 0.52) + gray * bleach * 0.52;
       green = green * (1 - bleach * 0.52) + gray * bleach * 0.52;
@@ -223,6 +312,10 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       red = red * (1 - age * 0.12) + age * 0.05;
       green = green * (1 - age * 0.16) + age * 0.035;
       blue = blue * (1 - age * 0.20) + age * 0.015;
+      if (Number(values.printerPreflash) > 0) {
+        const preflash = Math.min(1, Number(values.printerPreflash) / 100) * Math.max(0, 1 - luminance) * 0.12;
+        red += preflash; green += preflash; blue += preflash;
+      }
 
       const dx = x / Math.max(1, width - 1) - 0.5;
       const globalY = startRow + y;
@@ -235,14 +328,15 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
         red += warp * 0.7; green += warp * 0.3; blue -= warp * 0.4;
       }
       if (halation > 0 && luminance > 0.64) {
-        const glow = ((luminance - 0.64) / 0.36) * halation * 0.24;
-        red += glow * 1.25; green += glow * 0.18; blue -= glow * 0.15;
+        const glow = ((luminance - 0.64) / 0.36) * halation * (0.12 + Number(values.halationReturn || 25) / 100 * 0.24) * formatScale;
+        const halo = hslToRgb(Math.max(0, Number(values.haloHue) || 12) / 360, 0.72, 0.52);
+        red += glow * halo[0]; green += glow * halo[1]; blue += glow * halo[2];
       }
       if (grainAmount > 0) {
         const gx = Math.floor(x / grainSize) * grainSize;
         const gy = Math.floor(globalY / grainSize) * grainSize;
         const noise = hashNoise(gx, gy, seed);
-        const strength = grainAmount * (0.045 + Number(values.grainSize) / 100 * 0.055);
+        const strength = grainAmount * formatScale * (0.045 + Number(values.grainSize) / 100 * 0.055);
         red += noise * strength;
         green += noise * strength * (0.84 + grainColor * 0.12);
         blue += noise * strength * (0.72 + grainColor * 0.24);
@@ -265,7 +359,9 @@ function renderChunk(source, lutBuffer, amount, width, height, fullHeight, start
   for (let index = 0; index < source.length; index += 4) {
     const original = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
     const linearInput = original.map(input.decode);
-    const xyzD65 = matrixVector(input.matrix, linearInput);
+    const xyzD65 = input.white === "d50"
+      ? matrixVector(matrices.d50ToD65, matrixVector(input.matrix, linearInput))
+      : matrixVector(input.matrix, linearInput);
     const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
     const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
     const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
@@ -282,6 +378,92 @@ function renderChunk(source, lutBuffer, amount, width, height, fullHeight, start
   return processSecondary(output, width, height, values, startRow, fullHeight);
 }
 
+// LibRaw emits camera-corrected scene-linear Rec.2020 samples as uint16.  Keep
+// those samples at 16-bit through the gamut conversion and LUT lookup; only the
+// final display/export representation is quantised at the very end.
+function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, applyAcr3, outputType) {
+  const lut = new Uint16Array(lutBuffer);
+  const matrices = workerState.matrices;
+  const output = outputType === "rgba16"
+    ? new Uint16Array(width * height * 4)
+    : new Uint8ClampedArray(width * height * 4);
+  if (!matrices?.srgbToXyz) return output;
+  const mix = clamp01(amount);
+  const scale = outputType === "rgba16" ? 65535 : 255;
+  const sceneScale = Number(values?.rawSceneScale);
+  const sceneFactor = Number.isFinite(sceneScale) && sceneScale > 0 ? sceneScale / 65535 : 1;
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const sourceIndex = pixel * 3;
+    const original = [source[sourceIndex] * sceneFactor / 65535, source[sourceIndex + 1] * sceneFactor / 65535, source[sourceIndex + 2] * sceneFactor / 65535];
+    const xyzD65 = matrixVector(REC2020_TO_XYZ, original);
+    const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
+    const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
+    const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
+    const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+    const mappedXyzD50 = matrixVector(matrices.prophotoToXyz, mappedPro.map(prophotoDecode));
+    const mappedXyzD65 = matrixVector(matrices.d50ToD65, mappedXyzD50);
+    const mappedLinearSrgb = matrixVector(matrices.xyzToSrgb, mappedXyzD65).map(clamp01);
+    const baseLinearSrgb = matrixVector(matrices.xyzToSrgb, xyzD65).map(clamp01);
+    const base = baseLinearSrgb.map(srgbEncode);
+    const mapped = mappedLinearSrgb.map(srgbEncode);
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    const outputIndex = pixel * 4;
+    const valuesOut = [0, 1, 2].map((channel) => Math.max(0, Math.min(1, base[channel] * (1 - mix) + mapped[channel] * mix)));
+    if (outputType === "rgba16") {
+      output[outputIndex] = Math.round(valuesOut[0] * scale);
+      output[outputIndex + 1] = Math.round(valuesOut[1] * scale);
+      output[outputIndex + 2] = Math.round(valuesOut[2] * scale);
+      output[outputIndex + 3] = 65535;
+    } else {
+      output[outputIndex] = Math.round(valuesOut[0] * scale);
+      output[outputIndex + 1] = Math.round(valuesOut[1] * scale);
+      output[outputIndex + 2] = Math.round(valuesOut[2] * scale);
+      output[outputIndex + 3] = 255;
+    }
+    // Secondary controls operate in the display encoding. For 16-bit export,
+    // leave the result at 16-bit and apply the same arithmetic in place below.
+    void x; void y;
+  }
+  if (outputType === "rgba8") return processSecondary(output, width, height, values, startRow, fullHeight);
+  return output;
+}
+
+function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3, outputType) {
+  const lut = new Uint16Array(lutBuffer);
+  const matrices = workerState.matrices;
+  const input = inputSettings(colorSpace);
+  const output = outputType === "rgba16"
+    ? new Uint16Array(width * height * 4)
+    : new Uint8ClampedArray(width * height * 4);
+  if (!matrices?.srgbToXyz) return output;
+  const mix = clamp01(amount);
+  const scale = outputType === "rgba16" ? 65535 : 255;
+  for (let pixel = 0; pixel < width * height; pixel += 1) {
+    const si = pixel * 4;
+    const original = [source[si] / 65535, source[si + 1] / 65535, source[si + 2] / 65535];
+    const linearInput = original.map(input.decode);
+    const xyzD65 = input.white === "d50"
+      ? matrixVector(matrices.d50ToD65, matrixVector(input.matrix, linearInput))
+      : matrixVector(input.matrix, linearInput);
+    const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
+    const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
+    const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
+    const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+    const mappedXyzD65 = matrixVector(matrices.d50ToD65, matrixVector(matrices.prophotoToXyz, mappedPro.map(prophotoDecode)));
+    const mapped = matrixVector(matrices.xyzToSrgb, mappedXyzD65).map(clamp01).map(srgbEncode);
+    const base = matrixVector(matrices.xyzToSrgb, xyzD65).map(clamp01).map(srgbEncode);
+    const oi = pixel * 4;
+    const valuesOut = [0, 1, 2].map((channel) => Math.max(0, Math.min(1, base[channel] * (1 - mix) + mapped[channel] * mix)));
+    output[oi] = Math.round(valuesOut[0] * scale);
+    output[oi + 1] = Math.round(valuesOut[1] * scale);
+    output[oi + 2] = Math.round(valuesOut[2] * scale);
+    output[oi + 3] = scale;
+  }
+  if (outputType === "rgba8") return processSecondary(output, width, height, values, startRow, fullHeight);
+  return output;
+}
+
 self.onmessage = (event) => {
   const message = event.data || {};
   if (message.type === "init") {
@@ -292,7 +474,11 @@ self.onmessage = (event) => {
   }
   if (message.type !== "render") return;
   try {
-    const result = renderChunk(new Uint8ClampedArray(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3);
+    const result = message.sourceType === "raw16"
+      ? renderRaw16Chunk(new Uint16Array(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.applyAcr3, message.outputType || "rgba8")
+      : message.sourceType === "rgba16"
+        ? renderRgba16Chunk(new Uint16Array(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3, message.outputType || "rgba8")
+      : renderChunk(new Uint8ClampedArray(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3);
     self.postMessage({ id: message.id, startRow: message.startRow, buffer: result.buffer }, [result.buffer]);
   } catch (error) {
     self.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) });

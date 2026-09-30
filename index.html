@@ -52,7 +52,6 @@
           </div>
           <div class="library-tools">
             <label class="search-box"><span>⌕</span><input id="filmSearch" type="search" placeholder="搜索胶片" aria-label="搜索胶片" /></label>
-            <button class="icon-button" id="packButton" aria-label="管理胶片包">＋</button>
           </div>
           <div class="library-content" id="libraryContent">
             <div class="film-grid" id="filmGrid"></div>
@@ -67,11 +66,6 @@
 
         <section class="workspace" id="workspace">
           <div class="workspace-header">
-            <nav class="mode-tabs" aria-label="工作模式">
-              <button class="mode-tab active" data-mode="develop">开发</button>
-              <button class="mode-tab" data-mode="print">打印</button>
-              <button class="mode-tab" data-mode="crop">裁剪</button>
-            </nav>
             <div class="workspace-actions">
               <button class="subtle-button" data-action="save">保存</button>
               <button class="subtle-button" data-action="load">载入</button>
@@ -84,7 +78,7 @@
               <h2>放入一张照片</h2>
               <p>拖入图片，或从设备打开</p>
               <button class="primary-button" data-action="open">打开图片</button>
-              <div class="format-hint">JPG · PNG · WebP · TIFF</div>
+              <div class="format-hint">JPG · PNG · WebP · TIFF · DNG · NEF · CR3 · ARW · 3FR</div>
             </div>
             <canvas id="previewCanvas" aria-label="照片预览"></canvas>
             <div class="compare-line hidden" id="compareLine"><span>原图</span><span>编辑后</span></div>
@@ -107,8 +101,8 @@
         <aside class="side-panel right-panel" id="rightPanel">
           <div class="panel-header inspector-header">
             <div>
-              <div class="eyebrow">二次调色</div>
-              <h1>二次调色</h1>
+              <div class="eyebrow" id="modePanelEyebrow">开发</div>
+              <h1 id="modePanelTitle">开发</h1>
             </div>
             <button class="icon-button mobile-close" data-action="toggle-right" aria-label="关闭二次调色">×</button>
           </div>
@@ -117,6 +111,11 @@
             <button class="mini-button" data-action="favorite">☆</button>
           </div>
           <div class="inspector-note">主配置负责一次调色；右侧参数为二次调色，默认保持中性。</div>
+          <nav class="mode-tabs inspector-mode-tabs" aria-label="调色模式">
+            <button class="mode-tab active" data-mode="develop">开发</button>
+            <button class="mode-tab" data-mode="print">打印</button>
+            <button class="mode-tab" data-mode="crop">裁剪</button>
+          </nav>
           <div class="inspector-scroll" id="inspectorScroll">
             <section class="inspector-section open" data-section="light">
               <button class="section-heading" type="button"><span>明暗</span><span class="section-chevron">⌄</span></button>
@@ -233,7 +232,7 @@
             <section class="inspector-section" data-section="output">
               <button class="section-heading" type="button"><span>输出</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="select-row"><label for="outputFormat">格式</label><select id="outputFormat" data-field="outputFormat"><option value="image/jpeg">JPEG</option><option value="image/png">PNG</option><option value="image/webp">WebP</option></select></div>
+                <div class="select-row"><label for="outputFormat">格式</label><select id="outputFormat" data-field="outputFormat"><option value="image/jpeg">JPEG</option><option value="image/png">PNG</option><option value="image/webp">WebP</option><option value="image/tiff">TIFF（16 位）</option></select></div>
                 <div class="control-row"><label for="quality">质量</label><output data-output="quality">92</output><input id="quality" data-field="quality" type="range" min="50" max="100" step="1" value="92" /></div>
                 <div class="select-row"><label for="outputMedium">输出介质</label><select id="outputMedium" data-field="outputMedium"><option value="Photo">照片</option><option value="Print">打印</option><option value="Screen">屏幕</option><option value="Light Box">灯箱</option><option value="Scanner">扫描仪</option></select></div>
               </div>
@@ -242,8 +241,14 @@
           <div class="inspector-footer"><button class="ghost-wide" data-action="reset">重置全部设置</button></div>
         </aside>
       </div>
+      <nav class="mobile-bottom-nav" id="mobileBottomNav" aria-label="移动端工作区">
+        <button type="button" data-mobile-nav="films"><span>▦</span><small>胶片</small></button>
+        <button type="button" class="active" data-mobile-nav="develop"><span>◒</span><small>开发</small></button>
+        <button type="button" data-mobile-nav="print"><span>▤</span><small>打印</small></button>
+        <button type="button" data-mobile-nav="crop"><span>⌗</span><small>裁剪</small></button>
+      </nav>
       <div class="drawer-scrim" id="drawerScrim" data-action="close-drawers"></div>
-      <input id="fileInput" type="file" accept="image/*,.tif,.tiff" hidden />
+      <input id="fileInput" type="file" accept="image/*,.tif,.tiff,.dng,.nef,.nrw,.cr2,.cr3,.arw,.raf,.rw2,.orf,.pef,.srw,.3fr,.iiq,.x3f,.raw" hidden />
     </div>
     <script src="film-profiles.js"></script>
     <script src="app.js"></script>

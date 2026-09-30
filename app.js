@@ -18,6 +18,10 @@
   const zoomLabel = $("#zoomLabel");
   const stageToast = $("#stageToast");
   const compareLine = $("#compareLine");
+  const modePanelEyebrow = $("#modePanelEyebrow");
+  const modePanelTitle = $("#modePanelTitle");
+  const mobileBottomNav = $("#mobileBottomNav");
+  const histogramBars = $$(".mini-histogram i");
 
   const defaultValues = {
     exposure: 0,
@@ -91,6 +95,10 @@
     // sRGB before it reaches the XMP LUT.
     imageColorSpace: "srgb",
     imageApplyAcr3: false,
+    rawImage: null,
+    deepImage: null,
+    imageBitDepth: 8,
+    imageName: "",
     history: [],
     historyIndex: -1,
     savedFilms: JSON.parse(localStorage.getItem("filmwhisper-saved") || "[]")
@@ -104,6 +112,8 @@
   let lastCanvasSize = { width: 0, height: 0 };
   const lutConfig = window.FILM_LUT_CONFIG || null;
   const lutState = { buffer: null, size: lutConfig?.size || 32, count: lutConfig?.count || 0, ready: false, error: null };
+  const filmPreviewSources = new Map();
+  let filmPreviewToken = 0;
   const lutReady = fetch("film-luts.bin")
     .then((response) => {
       if (!response.ok) throw new Error(`LUT asset ${response.status}`);
@@ -205,20 +215,37 @@
     });
     activeFilmLabel.textContent = filmPresets.find((film) => film.id === state.selectedFilm)?.name || filmPresets[0]?.name || "ACROS 100";
     zoomLabel.textContent = state.zoom === 1 ? "适合" : `${Math.round(state.zoom * 100)}%`;
-    $("#mobileMode").textContent = ({ develop: "开发", print: "打印", crop: "裁剪" })[state.mode] || "开发";
+    const modeName = ({ develop: "开发", print: "打印", crop: "裁剪" })[state.mode] || "开发";
+    $("#mobileMode").textContent = modeName;
+    if (modePanelEyebrow) modePanelEyebrow.textContent = modeName;
+    if (modePanelTitle) modePanelTitle.textContent = modeName;
+    $$(".mode-tab").forEach((button) => button.classList.toggle("active", button.dataset.mode === state.mode));
+    $$('[data-mobile-nav]').forEach((button) => button.classList.toggle("active", button.dataset.mobileNav === state.mode));
+    syncModeSections();
     document.body.classList.toggle("before-mode", state.before);
   }
 
+  function syncModeSections() {
+    const visible = {
+      develop: new Set(["light", "color", "film", "grain", "halation", "lens", "regional", "grade", "selective", "histogram"]),
+      print: new Set(["screen", "frame", "output", "histogram"]),
+      crop: new Set(["crop", "frame", "histogram"]),
+    }[state.mode] || new Set();
+    $$('[data-section]').forEach((section) => section.classList.toggle("mode-hidden", !visible.has(section.dataset.section)));
+  }
+
   function renderFilmCards() {
+    const scrollTop = filmGrid.parentElement?.scrollTop || 0;
     const query = filmSearch.value.trim().toLowerCase();
     const filtered = filmPresets.filter((film) => `${film.name} ${film.meta}`.toLowerCase().includes(query));
     filmGrid.innerHTML = filtered.map((film) => `
       <button class="film-card ${state.selectedFilm === film.id ? "active" : ""}" data-film="${film.id}" style="--swatch:${film.swatch}" aria-label="选择 ${film.name}">
-        <span class="film-card-preview" aria-hidden="true"><img src="film-previews/${film.id}.jpg" alt="" loading="lazy" decoding="async"></span>
+        <span class="film-card-preview" aria-hidden="true"><img src="${filmPreviewSources.get(film.id) || `film-previews/${film.id}.jpg`}" alt="" loading="lazy" decoding="async"></span>
         <span class="film-card-star">${state.savedFilms.includes(film.id) ? "★" : "☆"}</span>
         <span class="film-card-copy"><span class="film-card-name">${film.name}</span><span class="film-card-meta">${film.meta}</span></span>
       </button>`).join("");
     $$('[data-film]', filmGrid).forEach((card) => card.addEventListener("click", () => selectFilm(card.dataset.film)));
+    if (filmGrid.parentElement) filmGrid.parentElement.scrollTop = scrollTop;
     renderSavedFilms();
   }
 
@@ -306,6 +333,21 @@
     [0.29734497525053605, 0.6273635662554661, 0.07529145849399788],
     [0.02703136138641234, 0.07068885253582723, 0.9913375368376388],
   ];
+  // D65/D50 matrices for the common photographic working spaces.  The canvas
+  // API does not expose the source ICC profile, so the importer detects the
+  // profile description and keeps the encoded samples untouched until this
+  // explicit conversion reaches the film LUT.
+  const displayP3ToXyz = [
+    [0.4865709486482162, 0.26566769316909306, 0.1982172852343625],
+    [0.2289745640697488, 0.6917385218365064, 0.079286914093745],
+    [0, 0.04511338185890264, 1.043944368900976],
+  ];
+  const rec2020ToXyz = [
+    [0.6369580483012914, 0.14461690358620832, 0.1688809751641721],
+    [0.2627002120112671, 0.6779980715188708, 0.05930171646986196],
+    [0, 0.028072693049087428, 1.060985057710791],
+  ];
+  const prophotoToXyzD50 = colorMatrices.prophotoToXyz;
   const acr3ForwardTable = new Float32Array(4097);
 
   function clamp01(value) { return Math.max(0, Math.min(1, value)); }
@@ -331,12 +373,29 @@
     return Math.max(0, value) ** 2.19921875;
   }
 
+  function rec2020Decode(value) {
+    const positive = Math.max(0, value);
+    const alpha = 1.09929682680944;
+    const beta = 0.018053968510807;
+    return positive < beta * 4.5
+      ? positive / 4.5
+      : ((positive + 1 - alpha) / alpha) ** (1 / 0.45);
+  }
+
   function inputColorSettings(values = null) {
     const colorSpace = values?.inputColorSpace || state.imageColorSpace || "srgb";
-    const adobe = colorSpace === "adobe-rgb";
+    const profiles = {
+      "adobe-rgb": { matrix: adobeRgbToXyz, decode: adobeRgbDecode, white: "d65" },
+      "display-p3": { matrix: displayP3ToXyz, decode: srgbDecode, white: "d65" },
+      "prophoto-rgb": { matrix: prophotoToXyzD50, decode: prophotoDecode, white: "d50" },
+      "rec2020": { matrix: rec2020ToXyz, decode: rec2020Decode, white: "d65" },
+      srgb: { matrix: colorMatrices.srgbToXyz, decode: srgbDecode, white: "d65" },
+    };
+    const selected = profiles[colorSpace] || profiles.srgb;
     return {
-      matrix: adobe ? adobeRgbToXyz : colorMatrices.srgbToXyz,
-      decode: adobe ? adobeRgbDecode : srgbDecode,
+      matrix: selected.matrix,
+      decode: selected.decode,
+      white: selected.white,
       applyAcr3: values?.imageApplyAcr3 ?? values?.inputApplyAcr3 ?? state.imageApplyAcr3,
     };
   }
@@ -415,8 +474,14 @@
     return new Uint16Array(lutState.buffer, offset, lutState.size ** 3 * 3);
   }
 
-  function applyPrimaryLut(source, amount = 1, values = null) {
-    const lut = getPrimaryLut();
+  function getFilmLut(profile) {
+    if (!lutState.ready || !lutState.buffer || !profile) return null;
+    const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
+    return new Uint16Array(lutState.buffer, offset, lutState.size ** 3 * 3);
+  }
+
+  function applyPrimaryLut(source, amount = 1, values = null, lutOverride = null) {
+    const lut = lutOverride || getPrimaryLut();
     if (!lut || !colorMatrices.srgbToXyz) return new Uint8ClampedArray(source);
     const input = inputColorSettings(values);
     const output = new Uint8ClampedArray(source);
@@ -424,7 +489,9 @@
     for (let index = 0; index < source.length; index += 4) {
       const original = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
       const linearInput = original.map(input.decode);
-      const xyzD65 = matrixVector(input.matrix, linearInput);
+      const xyzD65 = input.white === "d50"
+        ? matrixVector(colorMatrices.d50ToD65, matrixVector(input.matrix, linearInput))
+        : matrixVector(input.matrix, linearInput);
       const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
       const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
       const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(input.applyAcr3 ? acr3Forward(value) : value)));
@@ -437,6 +504,70 @@
       output[index] = Math.round((original[0] * (1 - mix) + mapped[0] * mix) * 255);
       output[index + 1] = Math.round((original[1] * (1 - mix) + mapped[1] * mix) * 255);
       output[index + 2] = Math.round((original[2] * (1 - mix) + mapped[2] * mix) * 255);
+    }
+    return output;
+  }
+
+  function applyRaw16Lut(source, width, height, amount = 1, values = null, outputType = "rgba8", lutOverride = null) {
+    const lut = lutOverride || getPrimaryLut();
+    const Output = outputType === "rgba16" ? Uint16Array : Uint8ClampedArray;
+    const output = new Output(width * height * 4);
+    if (!lut || !colorMatrices.srgbToXyz) return output;
+    const mix = clamp01(amount);
+    const scale = outputType === "rgba16" ? 65535 : 255;
+    // LibRaw's uint16 samples are scene-linear values with a per-file white
+    // point.  The upstream decoder exposes that point as sceneScale; applying
+    // it before the matrix keeps RAW exposure consistent with Phocus/ACR.
+    const sceneScale = Number(values?.rawSceneScale);
+    const sceneFactor = Number.isFinite(sceneScale) && sceneScale > 0 ? sceneScale / 65535 : 1;
+    const applyAcr3 = Boolean(values?.imageApplyAcr3 ?? state.imageApplyAcr3);
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      const si = pixel * 3;
+      const original = [source[si] * sceneFactor / 65535, source[si + 1] * sceneFactor / 65535, source[si + 2] * sceneFactor / 65535];
+      const xyzD65 = matrixVector(rec2020ToXyz, original);
+      const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
+      const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
+      const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
+      const mapped = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+      const mappedXyzD65 = matrixVector(colorMatrices.d50ToD65, matrixVector(colorMatrices.prophotoToXyz, mapped.map(prophotoDecode)));
+      const mappedRgb = matrixVector(colorMatrices.xyzToSrgb, mappedXyzD65).map(clamp01).map(srgbEncode);
+      const baseRgb = matrixVector(colorMatrices.xyzToSrgb, xyzD65).map(clamp01).map(srgbEncode);
+      const oi = pixel * 4;
+      output[oi] = Math.round((baseRgb[0] * (1 - mix) + mappedRgb[0] * mix) * scale);
+      output[oi + 1] = Math.round((baseRgb[1] * (1 - mix) + mappedRgb[1] * mix) * scale);
+      output[oi + 2] = Math.round((baseRgb[2] * (1 - mix) + mappedRgb[2] * mix) * scale);
+      output[oi + 3] = scale;
+    }
+    return output;
+  }
+
+  function applyRgba16Lut(source, width, height, amount = 1, values = null, outputType = "rgba8", lutOverride = null) {
+    const lut = lutOverride || getPrimaryLut();
+    const Output = outputType === "rgba16" ? Uint16Array : Uint8ClampedArray;
+    const output = new Output(width * height * 4);
+    if (!lut || !colorMatrices.srgbToXyz) return output;
+    const input = inputColorSettings(values);
+    const mix = clamp01(amount);
+    const scale = outputType === "rgba16" ? 65535 : 255;
+    for (let pixel = 0; pixel < width * height; pixel += 1) {
+      const si = pixel * 4;
+      const original = [source[si] / 65535, source[si + 1] / 65535, source[si + 2] / 65535];
+      const linearInput = original.map(input.decode);
+      const xyzD65 = input.white === "d50"
+        ? matrixVector(colorMatrices.d50ToD65, matrixVector(input.matrix, linearInput))
+        : matrixVector(input.matrix, linearInput);
+      const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
+      const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
+      const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(input.applyAcr3 ? acr3Forward(value) : value)));
+      const mapped = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+      const mappedXyzD65 = matrixVector(colorMatrices.d50ToD65, matrixVector(colorMatrices.prophotoToXyz, mapped.map(prophotoDecode)));
+      const mappedRgb = matrixVector(colorMatrices.xyzToSrgb, mappedXyzD65).map(clamp01).map(srgbEncode);
+      const baseRgb = matrixVector(colorMatrices.xyzToSrgb, xyzD65).map(clamp01).map(srgbEncode);
+      const oi = pixel * 4;
+      output[oi] = Math.round((baseRgb[0] * (1 - mix) + mappedRgb[0] * mix) * scale);
+      output[oi + 1] = Math.round((baseRgb[1] * (1 - mix) + mappedRgb[1] * mix) * scale);
+      output[oi + 2] = Math.round((baseRgb[2] * (1 - mix) + mappedRgb[2] * mix) * scale);
+      output[oi + 3] = scale;
     }
     return output;
   }
@@ -502,7 +633,11 @@
     const fields = [
       "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
       "saturation", "vibrance", "grain", "grainSize", "grainColor", "bleach", "age",
-      "halation", "vignette", "distortion", "filter", "selectedFilm",
+      "halation", "halationReturn", "haloHue", "vignette", "distortion", "filter", "selectedFilm",
+      "filmFormat", "push", "regionTarget", "regionWarmth", "regionTint", "regionLevel",
+      "gradeCurve", "gradeContrast", "gradeSaturation", "negativeViewing", "viewingIlluminant",
+      "paperGrade", "screenExposure", "enlarger", "printerPreflash", "outputMedium",
+      "selectiveSubject", "selectiveSpace", "selectiveFeather", "rawSceneScale",
       "imageColorSpace", "imageApplyAcr3",
     ];
     return fields.reduce((result, field) => {
@@ -511,11 +646,21 @@
     }, {});
   }
 
-  function runLutWorkerChunks(source, width, height, amount, values) {
+  function runLutWorkerChunks(source, width, height, amount, values, options = {}) {
     const pool = getLutWorkerPool();
-    const lut = getPrimaryLut();
+    const lut = options.lut || getPrimaryLut();
+    const sourceType = options.sourceType || "rgba8";
+    const outputType = options.outputType || "rgba8";
     if (!pool || !lut || !colorMatrices.srgbToXyz) {
-      return Promise.resolve({ data: applyPrimaryLut(source, amount, values), secondaryApplied: false });
+      if (sourceType === "raw16") {
+        const result = applyRaw16Lut(source, width, height, amount, values, outputType, lut);
+        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : result, secondaryApplied: outputType === "rgba8" });
+      }
+      if (sourceType === "rgba16") {
+        const result = applyRgba16Lut(source, width, height, amount, values, outputType, lut);
+        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : result, secondaryApplied: outputType === "rgba8" });
+      }
+      return Promise.resolve({ data: applyPrimaryLut(source, amount, values, lut), secondaryApplied: false });
     }
     const workerTotal = Math.min(pool.workers.length, Math.max(1, height));
     const rowsPerWorker = Math.ceil(height / workerTotal);
@@ -524,8 +669,9 @@
       const startRow = workerIndex * rowsPerWorker;
       const endRow = Math.min(height, startRow + rowsPerWorker);
       if (startRow >= endRow) continue;
-      const start = startRow * width * 4;
-      const end = endRow * width * 4;
+      const channels = sourceType === "raw16" ? 3 : 4;
+      const start = startRow * width * channels;
+      const end = endRow * width * channels;
       const chunk = source.slice(start, end);
       const lutBuffer = lut.buffer.slice(lut.byteOffset, lut.byteOffset + lut.byteLength);
       const id = lutWorkerPool.nextId++;
@@ -543,14 +689,19 @@
           values,
           colorSpace: values?.imageColorSpace || state.imageColorSpace || "srgb",
           applyAcr3: Boolean(values?.imageApplyAcr3 ?? state.imageApplyAcr3),
+          sourceType,
+          outputType,
           buffer: chunk.buffer,
           lutBuffer,
         }, [chunk.buffer, lutBuffer]);
       }));
     }
     return Promise.all(jobs).then((chunks) => {
-      const output = new Uint8ClampedArray(source);
-      chunks.forEach((chunk) => output.set(new Uint8ClampedArray(chunk.buffer), chunk.startRow * width * 4));
+      const Output = outputType === "rgba16" ? Uint16Array : Uint8ClampedArray;
+      const output = new Output(sourceType === "raw16" ? width * height * 4 : source.length);
+      if (sourceType !== "raw16") output.set(source);
+      const channels = outputType === "rgba16" || sourceType === "raw16" ? 4 : 4;
+      chunks.forEach((chunk) => output.set(new Output(chunk.buffer), chunk.startRow * width * channels));
       return { data: output, secondaryApplied: true };
     });
   }
@@ -585,17 +736,30 @@
   function processPixels(source, width, height, values) {
     const secondaryFields = [
       "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
-      "saturation", "vibrance", "grain", "bleach", "age", "halation", "vignette", "distortion",
+      "saturation", "vibrance", "grain", "bleach", "age", "halation", "halationReturn", "haloHue", "vignette", "distortion",
+      "push", "regionWarmth", "regionTint", "regionLevel", "gradeContrast", "gradeSaturation", "screenExposure", "printerPreflash",
     ];
     const hasSecondaryWork = values.filter !== "无"
-      || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001);
+      || secondaryFields.some((field) => Math.abs(Number(values[field]) || 0) > 0.0001)
+      || values.paperGrade !== "Reference"
+      || values.enlarger !== "Diffuser"
+      || values.negativeViewing !== "Reference Exposure"
+      || values.outputMedium !== "Photo"
+      || values.viewingIlluminant !== "D50";
     if (!hasSecondaryWork) return source;
     const output = new Uint8ClampedArray(source);
-    const exposure = Math.pow(2, Number(values.exposure) || 0);
-    const contrast = 1 + (Number(values.contrast) || 0) / 100;
+    const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
+    const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0)
+      + (values.negativeViewing === "Auto Levels" ? 0.08 : 0));
+    const contrast = (1 + (Number(values.contrast) || 0) / 100)
+      * (values.paperGrade === "Hard" ? 1.08 : values.paperGrade === "Soft" ? 0.92 : 1)
+      * (values.enlarger === "Condenser" ? 1.04 : values.enlarger === "Diffuser" ? 0.97 : 1)
+      * (values.negativeViewing === "Graded Print" ? 1.06 : values.negativeViewing === "Auto Levels" ? 0.98 : 1)
+      * (values.outputMedium === "Print" ? 1.04 : values.outputMedium === "Screen" ? 0.98 : 1);
     const highlight = (Number(values.highlights) || 0) / 100;
     const shadow = (Number(values.shadows) || 0) / 100;
-    const temp = (Number(values.temperature) || 0) / 100;
+    const temp = ((Number(values.temperature) || 0) / 100)
+      + (values.viewingIlluminant === "Tungsten 2856 K" ? -0.12 : values.viewingIlluminant === "Daylight 5500 K" ? 0.03 : 0);
     const tint = (Number(values.tint) || 0) / 100;
     const sat = 1 + (Number(values.saturation) || 0) / 100;
     const vib = (Number(values.vibrance) || 0) / 100;
@@ -628,6 +792,17 @@
         r += temp * 0.11 - tint * 0.035;
         g += tint * 0.08;
         b -= temp * 0.11 - tint * 0.035;
+        const regionWeight = values.regionTarget === "Highlights"
+          ? Math.max(0, Math.min(1, lum))
+          : values.regionTarget === "Midtones"
+            ? Math.max(0, 1 - Math.abs(lum - 0.5) * 2.4)
+            : Math.max(0, 1 - lum);
+        const regionAmount = regionWeight * 0.85;
+        r += (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.12;
+        g += (Number(values.regionTint) || 0) / 100 * regionAmount * 0.08;
+        b -= (Number(values.regionWarmth) || 0) / 100 * regionAmount * 0.10;
+        const regionLevel = (Number(values.regionLevel) || 0) / 100 * regionAmount;
+        r *= Math.pow(2, regionLevel * 0.35); g *= Math.pow(2, regionLevel * 0.35); b *= Math.pow(2, regionLevel * 0.35);
         if (filter === "Warm 1/8" || filter === "Warm 1/4") {
           const strength = filter === "Warm 1/4" ? 0.055 : 0.028;
           r += strength; g += strength * 0.35; b -= strength * 0.75;
@@ -643,6 +818,52 @@
         const [h, s, l] = rgbToHsl(Math.max(0, r), Math.max(0, g), Math.max(0, b));
         const vivid = vib >= 0 ? vib * (1 - s) : vib;
         [r, g, b] = hslToRgb(h, Math.max(0, Math.min(1, s * sat + vivid)), l);
+        // Selective grading is a mask for the grade controls rather than a
+        // decorative selector.  The neutral Color/RGB setting deliberately
+        // leaves the global grade unchanged; other targets derive a soft mask
+        // from the current pixel so the same grade sliders affect only that
+        // tonal/chroma region.
+        let selectiveMask = 1;
+        const selectiveIsCustom = values.selectiveSubject !== "Color" || values.selectiveSpace !== "RGB";
+        if (selectiveIsCustom) {
+          const feather = Math.max(0, Math.min(1, Number(values.selectiveFeather ?? 50) / 100));
+          const chroma = Math.max(0, Math.min(1, s));
+          const baseMask = values.selectiveSubject === "Light"
+            ? l
+            : values.selectiveSubject === "Range"
+              ? Math.max(0, 1 - Math.abs(l - 0.5) * 2.2)
+              : values.selectiveSubject === "Softness"
+                ? 1 - chroma
+                : values.selectiveSubject === "Edge"
+                  ? Math.min(1, chroma * 1.5)
+                  : chroma;
+          const spaceMask = values.selectiveSpace === "Luma" || values.selectiveSpace === "OKLab L"
+            ? l
+            : values.selectiveSpace === "Chroma" || values.selectiveSpace === "OKLab a/b"
+              ? chroma
+              : baseMask;
+          selectiveMask = Math.max(0, Math.min(1, (spaceMask * (0.45 + feather * 0.55)) + (1 - feather) * 0.2));
+        }
+        const gradeSat = 1 + ((Number(values.gradeSaturation) || 0) / 100) * selectiveMask;
+        if (Math.abs(Number(values.gradeSaturation) || 0) > 0.0001) {
+          const gradeGray = (r + g + b) / 3;
+          r = gradeGray + (r - gradeGray) * gradeSat;
+          g = gradeGray + (g - gradeGray) * gradeSat;
+          b = gradeGray + (b - gradeGray) * gradeSat;
+        }
+        const gradeContrast = 1 + ((Number(values.gradeContrast) || 0) / 100) * selectiveMask;
+        if (Math.abs(Number(values.gradeContrast) || 0) > 0.0001) {
+          if (["Luma", "OKLab L"].includes(values.gradeCurve)) {
+            const gradeLum = r * 0.2126 + g * 0.7152 + b * 0.0722;
+            const adjusted = (gradeLum - 0.5) * gradeContrast + 0.5;
+            const factor = gradeLum > 0.0001 ? adjusted / gradeLum : 1;
+            r *= factor; g *= factor; b *= factor;
+          } else {
+            r = (r - 0.5) * gradeContrast + 0.5;
+            g = (g - 0.5) * gradeContrast + 0.5;
+            b = (b - 0.5) * gradeContrast + 0.5;
+          }
+        }
         const gray = (r + g + b) / 3;
         r = r * (1 - bleach * 0.52) + gray * bleach * 0.52;
         g = g * (1 - bleach * 0.52) + gray * bleach * 0.52;
@@ -650,6 +871,10 @@
         r = r * (1 - age * 0.12) + age * 0.05;
         g = g * (1 - age * 0.16) + age * 0.035;
         b = b * (1 - age * 0.20) + age * 0.015;
+        if (Number(values.printerPreflash) > 0) {
+          const preflash = Math.min(1, Number(values.printerPreflash) / 100) * Math.max(0, 1 - lum) * 0.12;
+          r += preflash; g += preflash; b += preflash;
+        }
 
         const dx = x / Math.max(1, width - 1) - 0.5;
         const dy = y / Math.max(1, height - 1) - 0.5;
@@ -662,17 +887,19 @@
         }
 
         if (halation > 0 && lum > 0.64) {
-          const glow = ((lum - 0.64) / 0.36) * halation * 0.24;
-          r += glow * 1.25;
-          g += glow * 0.18;
-          b -= glow * 0.15;
+          const glow = ((lum - 0.64) / 0.36) * halation * (0.12 + Number(values.halationReturn || 25) / 100 * 0.24) * formatScale;
+          const hue = Math.max(0, Number(values.haloHue) || 12) / 360;
+          const halo = hslToRgb(hue, 0.72, 0.52);
+          r += glow * halo[0];
+          g += glow * halo[1];
+          b += glow * halo[2];
         }
 
         if (grainAmount > 0) {
           const gx = Math.floor(x / grainSize) * grainSize;
           const gy = Math.floor(y / grainSize) * grainSize;
           const noise = hashNoise(gx, gy, seed);
-          const strength = grainAmount * (0.045 + Number(values.grainSize) / 100 * 0.055);
+          const strength = grainAmount * formatScale * (0.045 + Number(values.grainSize) / 100 * 0.055);
           r += noise * strength;
           g += noise * strength * (0.84 + grainColor * 0.12);
           b += noise * strength * (0.72 + grainColor * 0.24);
@@ -725,6 +952,7 @@
     outputContext.scale(state.flipH ? -1 : 1, 1);
     outputContext.drawImage(working, -working.width / 2, -working.height / 2);
     outputContext.restore();
+    let transformed = output;
     if (Math.abs(Number(values.straighten)) > 0.01) {
       const rotated = document.createElement("canvas");
       rotated.width = output.width; rotated.height = output.height;
@@ -732,18 +960,153 @@
       rctx.translate(rotated.width / 2, rotated.height / 2);
       rctx.rotate((Number(values.straighten) * Math.PI) / 180);
       rctx.drawImage(output, -output.width / 2, -output.height / 2);
-      return rotated;
+      transformed = rotated;
+    }
+    if (values.frameStyle === "无" || Number(values.frameSize) <= 0) return transformed;
+    const frameSize = Math.max(1, Math.round(Math.min(transformed.width, transformed.height) * Number(values.frameSize) / 100 * 0.12));
+    const padding = Math.max(1, Math.round(frameSize * 0.72));
+    const framed = document.createElement("canvas");
+    const extraVertical = values.frameStyle === "Story" ? Math.round(frameSize * 0.45) : 0;
+    const extraHorizontal = values.frameStyle === "Portrait Post" ? Math.round(frameSize * 0.2) : 0;
+    framed.width = transformed.width + padding * 2 + extraHorizontal * 2;
+    framed.height = transformed.height + padding * 2 + extraVertical * 2;
+    const frameContext = framed.getContext("2d");
+    const isWhite = values.frameStyle === "White Mount" || values.frameStyle === "Square Post" || values.frameStyle === "Portrait Post" || values.frameStyle === "Story";
+    const background = isWhite ? "#f1ede4" : values.frameStyle === "Black Mount" ? "#131416" : "#2c2724";
+    frameContext.fillStyle = background;
+    frameContext.fillRect(0, 0, framed.width, framed.height);
+    const imageX = padding + extraHorizontal;
+    const imageY = padding + extraVertical;
+    frameContext.drawImage(transformed, imageX, imageY);
+    if (values.frameStyle === "Carrier Border" || values.frameStyle === "Emulsion Border") {
+      frameContext.strokeStyle = values.frameStyle === "Carrier Border" ? "#a88a68" : "#ddd3c4";
+      frameContext.lineWidth = Math.max(1, Math.round(frameSize * 0.18));
+      frameContext.strokeRect(imageX + frameContext.lineWidth / 2, imageY + frameContext.lineWidth / 2, transformed.width - frameContext.lineWidth, transformed.height - frameContext.lineWidth);
+    }
+    return framed;
+  }
+
+  function downsampleRaw(size) {
+    const raw = state.rawImage;
+    if (!raw) return null;
+    const output = new Uint16Array(size.width * size.height * 3);
+    const channels = raw.colors === 1 ? 1 : 3;
+    for (let y = 0; y < size.height; y += 1) {
+      const sourceY = Math.min(raw.height - 1, Math.floor((y + 0.5) * raw.height / size.height));
+      for (let x = 0; x < size.width; x += 1) {
+        const sourceX = Math.min(raw.width - 1, Math.floor((x + 0.5) * raw.width / size.width));
+        const sourceIndex = (sourceY * raw.width + sourceX) * channels;
+        const destinationIndex = (y * size.width + x) * 3;
+        if (channels === 1) {
+          const value = raw.data[sourceIndex];
+          output[destinationIndex] = value;
+          output[destinationIndex + 1] = value;
+          output[destinationIndex + 2] = value;
+        } else {
+          output[destinationIndex] = raw.data[sourceIndex];
+          output[destinationIndex + 1] = raw.data[sourceIndex + 1];
+          output[destinationIndex + 2] = raw.data[sourceIndex + 2];
+        }
+      }
     }
     return output;
   }
 
+  function downsampleDeep(size) {
+    const deep = state.deepImage;
+    if (!deep) return null;
+    const output = new Uint16Array(size.width * size.height * 4);
+    for (let y = 0; y < size.height; y += 1) {
+      const sourceY = Math.min(deep.height - 1, Math.floor((y + 0.5) * deep.height / size.height));
+      for (let x = 0; x < size.width; x += 1) {
+        const sourceX = Math.min(deep.width - 1, Math.floor((x + 0.5) * deep.width / size.width));
+        const sourceIndex = (sourceY * deep.width + sourceX) * 4;
+        const destinationIndex = (y * size.width + x) * 4;
+        output[destinationIndex] = deep.data[sourceIndex];
+        output[destinationIndex + 1] = deep.data[sourceIndex + 1];
+        output[destinationIndex + 2] = deep.data[sourceIndex + 2];
+        output[destinationIndex + 3] = deep.data[sourceIndex + 3];
+      }
+    }
+    return output;
+  }
+
+  async function generateFilmPreviews() {
+    const token = ++filmPreviewToken;
+    if (!state.imageLoaded || !state.image) return;
+    if (!lutState.ready) {
+      await lutReady;
+      if (token !== filmPreviewToken) return;
+    }
+    if (!lutState.ready) return;
+    const size = { width: 180, height: 112 };
+    let source = null;
+    let sourceType = "rgba8";
+    if (state.rawImage) {
+      source = downsampleRaw(size);
+      sourceType = "raw16";
+    } else if (state.deepImage) {
+      source = downsampleDeep(size);
+      sourceType = "rgba16";
+    } else {
+      const thumbnail = document.createElement("canvas");
+      thumbnail.width = size.width;
+      thumbnail.height = size.height;
+      thumbnail.getContext("2d", { willReadFrequently: true }).drawImage(state.image, 0, 0, size.width, size.height);
+      source = thumbnail.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, size.width, size.height).data;
+    }
+    const values = {
+      ...defaultValues,
+      selectedFilm: defaultFilmId,
+      imageColorSpace: state.imageColorSpace,
+      imageApplyAcr3: Boolean(state.rawImage),
+      rawSceneScale: state.rawImage?.sceneScale || 65535,
+    };
+    filmPreviewSources.clear();
+    renderFilmCards();
+    let cursor = 0;
+    const concurrency = Math.min(4, Math.max(2, Number(window.navigator.hardwareConcurrency) || 2));
+    const renderOne = async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= filmPresets.length || token !== filmPreviewToken) return;
+        const film = filmPresets[index];
+        const lut = getFilmLut(film);
+        if (!lut) continue;
+        try {
+          const transformed = await runLutWorkerChunks(
+            source,
+            size.width,
+            size.height,
+            1,
+            { ...values, selectedFilm: film.id },
+            { lut, sourceType, outputType: "rgba8" },
+          );
+          if (token !== filmPreviewToken) return;
+          const thumbnail = document.createElement("canvas");
+          thumbnail.width = size.width;
+          thumbnail.height = size.height;
+          thumbnail.getContext("2d").putImageData(new ImageData(transformed.data, size.width, size.height), 0, 0);
+          filmPreviewSources.set(film.id, thumbnail.toDataURL("image/jpeg", 0.82));
+          renderFilmCards();
+        } catch (error) {
+          console.warn("Film preview failed", film.id, error);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: concurrency }, renderOne));
+  }
+
   function convertInputToSrgb(source) {
-    if (state.imageColorSpace !== "adobe-rgb") return new Uint8ClampedArray(source);
+    if (state.imageColorSpace === "srgb") return new Uint8ClampedArray(source);
     const output = new Uint8ClampedArray(source);
+    const input = inputColorSettings({ inputColorSpace: state.imageColorSpace, imageApplyAcr3: false });
     for (let index = 0; index < source.length; index += 4) {
       const encoded = [source[index] / 255, source[index + 1] / 255, source[index + 2] / 255];
-      const linear = encoded.map(adobeRgbDecode);
-      const xyz = matrixVector(adobeRgbToXyz, linear);
+      const linear = encoded.map(input.decode);
+      const xyz = input.white === "d50"
+        ? matrixVector(colorMatrices.d50ToD65, matrixVector(input.matrix, linear))
+        : matrixVector(input.matrix, linear);
       const srgbLinear = matrixVector(colorMatrices.xyzToSrgb, xyz).map(clamp01);
       const converted = srgbLinear.map(srgbEncode);
       output[index] = Math.round(converted[0] * 255);
@@ -759,17 +1122,31 @@
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = size.width; sourceCanvas.height = size.height;
     const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
-    sourceContext.drawImage(state.image, 0, 0, size.width, size.height);
     const values = activeValues(useBefore);
-    const data = sourceContext.getImageData(0, 0, size.width, size.height);
-    const transformed = useBefore
-      ? { data: convertInputToSrgb(data.data), secondaryApplied: false }
-      : await applyPrimaryLutParallel(data.data, size.width, size.height, Number(values.filmAmount) / 100, values);
-    const processed = transformed.secondaryApplied
-      ? transformed.data
-      : processPixels(transformed.data, size.width, size.height, values);
-    data.data.set(processed);
-    sourceContext.putImageData(data, 0, 0);
+    if (state.rawImage || state.deepImage) {
+      const deepPixels = state.rawImage ? downsampleRaw(size) : downsampleDeep(size);
+      const transformed = await runLutWorkerChunks(
+        deepPixels,
+        size.width,
+        size.height,
+        useBefore ? 0 : Number(values.filmAmount) / 100,
+        { ...values, imageApplyAcr3: state.imageApplyAcr3, rawSceneScale: state.rawImage?.sceneScale || 65535 },
+        { sourceType: state.rawImage ? "raw16" : "rgba16", outputType: "rgba8" },
+      );
+      const data = new ImageData(transformed.data, size.width, size.height);
+      sourceContext.putImageData(data, 0, 0);
+    } else {
+      sourceContext.drawImage(state.image, 0, 0, size.width, size.height);
+      const data = sourceContext.getImageData(0, 0, size.width, size.height);
+      const transformed = useBefore
+        ? { data: convertInputToSrgb(data.data), secondaryApplied: false }
+        : await applyPrimaryLutParallel(data.data, size.width, size.height, Number(values.filmAmount) / 100, values);
+      const processed = transformed.secondaryApplied
+        ? transformed.data
+        : processPixels(transformed.data, size.width, size.height, values);
+      data.data.set(processed);
+      sourceContext.putImageData(data, 0, 0);
+    }
     return transformCanvas(sourceCanvas, values);
   }
 
@@ -780,6 +1157,27 @@
     const destinationContext = destination.getContext("2d");
     destinationContext.clearRect(0, 0, destination.width, destination.height);
     destinationContext.drawImage(source, 0, 0);
+  }
+
+  function updateHistogram(source) {
+    if (!source || !histogramBars.length || !source.width || !source.height) return;
+    try {
+      const data = source.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, source.width, source.height).data;
+      const bins = new Array(histogramBars.length).fill(0);
+      const pixelCount = source.width * source.height;
+      const stride = Math.max(1, Math.ceil(pixelCount / 180000));
+      for (let pixel = 0; pixel < pixelCount; pixel += stride) {
+        const index = pixel * 4;
+        const luminance = (data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722) / 255;
+        bins[Math.min(bins.length - 1, Math.floor(luminance * bins.length))] += 1;
+      }
+      const peak = Math.max(1, ...bins);
+      histogramBars.forEach((bar, index) => {
+        bar.style.height = `${Math.max(6, Math.round((bins[index] / peak) * 100))}%`;
+      });
+    } catch {
+      // The canvas may be unavailable briefly while an image is replaced.
+    }
   }
 
   function ensureCompareCanvas() {
@@ -810,11 +1208,12 @@
         const before = state.before || state.compare ? await makeProcessedCanvas(true) : null;
         if (token !== renderToken) return;
         drawCanvas(canvas, state.before ? before : after);
+        updateHistogram(canvas);
         if (state.compare) {
-        drawCanvas(ensureCompareCanvas(), before);
-        compareCanvas.classList.remove("hidden");
-        canvas.classList.add("compare-active");
-        compareLine.classList.remove("hidden");
+          drawCanvas(ensureCompareCanvas(), before);
+          compareCanvas.classList.remove("hidden");
+          canvas.classList.add("compare-active");
+          compareLine.classList.remove("hidden");
         } else if (compareCanvas) {
           compareCanvas.classList.add("hidden");
           canvas.classList.remove("compare-active");
@@ -822,13 +1221,8 @@
         }
         canvas.style.transform = `scale(${state.zoom})`;
         compareCanvas?.style.setProperty("transform", `scale(${state.zoom})`);
-        if (state.frameStyle !== "无" && Number(state.frameSize) > 0) {
-          canvas.style.border = `${Math.max(2, Number(state.frameSize) / 8)}px solid ${state.frameStyle.includes("White") ? "#f2eee4" : state.frameStyle.includes("Black") ? "#151515" : "#b89e7b"}`;
-          canvas.style.padding = `${Math.max(0, Number(state.frameSize) / 12)}px`;
-        } else {
-          canvas.style.border = "0";
-          canvas.style.padding = "0";
-        }
+        canvas.style.border = "0";
+        canvas.style.padding = "0";
         lastCanvasSize = { width: canvas.width, height: canvas.height };
         renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${activeFilmLabel.textContent}`;
       } catch (error) {
@@ -865,9 +1259,16 @@
 
   async function detectInputColorSpace(file) {
     try {
-      const header = await file.slice(0, 131072).arrayBuffer();
+      // ICC descriptions are ASCII tag payloads inside JPEG/TIFF/PNG files.
+      // Read a bounded prefix so a large RAW is never copied just to identify
+      // its embedded preview.  The fallback is sRGB, matching browser image
+      // decoding when no profile is present.
+      const header = await file.slice(0, 1048576).arrayBuffer();
       const text = new TextDecoder().decode(header);
       if (/Adobe RGB\s*\(1998\)/i.test(text) || /Adobe RGB/i.test(text)) return "adobe-rgb";
+      if (/Display\s*P3|DisplayP3|P3\s*D65/i.test(text)) return "display-p3";
+      if (/ProPhoto|ROMM\s*RGB|ROMM_RGB/i.test(text)) return "prophoto-rgb";
+      if (/Rec\.?\s*2020|BT\.?\s*2020|ITU[-_ ]R\s*BT\.2020/i.test(text)) return "rec2020";
     } catch { /* use the safe sRGB default */ }
     return "srgb";
   }
@@ -881,11 +1282,15 @@
     if (state.image?.close) state.image.close();
     if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
     state.image = image;
+    state.rawImage = null;
+    state.deepImage = null;
     state.imageUrl = url;
     state.imageColorSpace = colorSpace;
     // JPG/PNG/TIFF are already rendered/output-referred. Applying ACR3 here
     // would double-apply the base tone curve before the Creative RGBTable.
     state.imageApplyAcr3 = false;
+    state.imageBitDepth = 8;
+    state.imageName = "";
     state.imageLoaded = true;
     state.imageLabel = "已载入图片";
     state.zoom = 1;
@@ -894,9 +1299,210 @@
     showToast("图片已载入");
   }
 
+  const rawExtensions = /\.(dng|nef|nrw|cr2|cr3|arw|srf|sr2|raf|rw2|orf|pef|srw|3fr|iiq|x3f|raw)$/i;
+
+  function isRawFile(file) {
+    return Boolean(file && rawExtensions.test(file.name || ""));
+  }
+
+  async function decodeUncompressedTiff16(file) {
+    if (!/\.tiff?$/i.test(file.name || "")) return null;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.length < 16) return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const little = bytes[0] === 0x49 && bytes[1] === 0x49;
+    if (!little && !(bytes[0] === 0x4d && bytes[1] === 0x4d)) return null;
+    const u16 = (offset) => view.getUint16(offset, little);
+    const u32 = (offset) => view.getUint32(offset, little);
+    if (u16(2) !== 42) return null; // BigTIFF/compressed inputs fall back to browser decoding.
+    const typeSize = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8 };
+    const readValues = (entryOffset) => {
+      const type = u16(entryOffset + 2);
+      const count = u32(entryOffset + 4);
+      const unit = typeSize[type];
+      if (!unit || count > 1000000) return [];
+      const length = unit * count;
+      const base = length <= 4 ? entryOffset + 8 : u32(entryOffset + 8);
+      if (base < 0 || base + length > bytes.length) return [];
+      const values = [];
+      for (let i = 0; i < count; i += 1) {
+        const offset = base + i * unit;
+        if (type === 1 || type === 7) values.push(bytes[offset]);
+        else if (type === 3) values.push(u16(offset));
+        else if (type === 4) values.push(u32(offset));
+        else if (type === 8) values.push(view.getInt16(offset, little));
+        else if (type === 9) values.push(view.getInt32(offset, little));
+        else values.push(0);
+      }
+      return values;
+    };
+    const ifdOffset = u32(4);
+    if (ifdOffset + 2 > bytes.length) return null;
+    const count = u16(ifdOffset);
+    const tags = new Map();
+    for (let i = 0; i < count; i += 1) {
+      const at = ifdOffset + 2 + i * 12;
+      if (at + 12 > bytes.length) break;
+      tags.set(u16(at), readValues(at));
+    }
+    const width = tags.get(256)?.[0];
+    const height = tags.get(257)?.[0];
+    const bits = tags.get(258) || [];
+    const compression = tags.get(259)?.[0] || 1;
+    const photometric = tags.get(262)?.[0] || 2;
+    const offsets = tags.get(273) || [];
+    const samples = tags.get(277)?.[0] || bits.length || 3;
+    const rowsPerStrip = tags.get(278)?.[0] || height;
+    const byteCounts = tags.get(279) || [];
+    const planar = tags.get(284)?.[0] || 1;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
+      || width * height > 120000000 || compression !== 1 || photometric !== 2
+      || planar !== 1 || samples < 3 || samples > 4 || bits.some((value) => value !== 16)) return null;
+    const output = new Uint16Array(width * height * 4);
+    let destinationRow = 0;
+    for (let strip = 0; strip < offsets.length && destinationRow < height; strip += 1) {
+      const offset = offsets[strip];
+      const byteCount = byteCounts[strip] || 0;
+      if (offset < 0 || byteCount < width * 2 * samples || offset + byteCount > bytes.length) return null;
+      const rows = Math.min(rowsPerStrip, height - destinationRow);
+      const rowBytes = width * samples * 2;
+      for (let row = 0; row < rows; row += 1) {
+        const sourceRow = offset + row * rowBytes;
+        const targetRow = (destinationRow + row) * width * 4;
+        for (let x = 0; x < width; x += 1) {
+          const sourcePixel = sourceRow + x * samples * 2;
+          const targetPixel = targetRow + x * 4;
+          output[targetPixel] = u16(sourcePixel);
+          output[targetPixel + 1] = u16(sourcePixel + 2);
+          output[targetPixel + 2] = u16(sourcePixel + 4);
+          output[targetPixel + 3] = samples > 3 ? u16(sourcePixel + 6) : 65535;
+        }
+      }
+      destinationRow += rows;
+    }
+    if (destinationRow < height) return null;
+    return { width, height, data: output, colorSpace: await detectInputColorSpace(file) };
+  }
+
+  function setDeepImage(decoded, file, token) {
+    if (token !== imageLoadToken) return;
+    state.image?.close?.();
+    if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+    state.image = { naturalWidth: decoded.width, naturalHeight: decoded.height, width: decoded.width, height: decoded.height };
+    state.deepImage = decoded;
+    state.rawImage = null;
+    state.imageUrl = "";
+    state.imageColorSpace = decoded.colorSpace || "srgb";
+    state.imageApplyAcr3 = false;
+    state.imageBitDepth = 16;
+    state.imageName = file.name || "TIFF";
+    state.imageLoaded = true;
+    state.imageLabel = file.name || "TIFF";
+    state.zoom = 1;
+    syncControls();
+    render();
+    showToast(`16 位 TIFF 已载入 · ${decoded.width} × ${decoded.height}`);
+    generateFilmPreviews();
+  }
+
+  function decodeRawFile(file, token) {
+    return new Promise((resolve, reject) => {
+      if (token !== imageLoadToken) return reject(new DOMException("Import cancelled.", "AbortError"));
+      const worker = new Worker("raw-worker.js", { type: "module" });
+      let settled = false;
+      let timeout = null;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        worker.terminate();
+        error ? reject(error) : resolve(value);
+      };
+      worker.onerror = (event) => {
+        event.preventDefault();
+        finish(new Error("RAW 解码器无法运行"));
+      };
+      worker.onmessage = ({ data }) => {
+        if (token !== imageLoadToken) return finish(new DOMException("Import cancelled.", "AbortError"));
+        if (data.status) {
+          renderStatus.textContent = data.status;
+          return;
+        }
+        if (data.error) return finish(new Error(data.error));
+        if (!(data.pixels instanceof Uint16Array) || ![1, 3].includes(data.colors)
+          || !Number.isInteger(data.width) || !Number.isInteger(data.height)
+          || data.width < 1 || data.height < 1
+          || data.pixels.length !== data.width * data.height * data.colors) {
+          return finish(new Error("RAW 解码器返回了无效像素"));
+        }
+        finish(null, data);
+      };
+      file.arrayBuffer().then((bytes) => {
+        if (token === imageLoadToken && !settled) {
+          const decoderURL = new URL("raw/decoder.mjs", document.baseURI).href;
+          worker.postMessage({ bytes, negative: false, decoderURL }, [bytes]);
+        }
+      }).catch((error) => finish(error));
+      timeout = setTimeout(() => finish(new Error("RAW 解码超时，请尝试较小的文件")), 180000);
+    });
+  }
+
+  function setRawImage(decoded, file, token) {
+    if (token !== imageLoadToken) return;
+    state.image?.close?.();
+    if (state.imageUrl) URL.revokeObjectURL(state.imageUrl);
+    state.image = { naturalWidth: decoded.width, naturalHeight: decoded.height, width: decoded.width, height: decoded.height };
+    state.deepImage = null;
+    state.rawImage = {
+      width: decoded.width,
+      height: decoded.height,
+      colors: decoded.colors,
+      data: decoded.pixels,
+      sceneScale: Number.isFinite(decoded.sceneScale) && decoded.sceneScale > 0 ? decoded.sceneScale : 65535,
+      profile: decoded.profile,
+      sceneKelvin: decoded.sceneKelvin,
+    };
+    state.imageUrl = "";
+    state.imageColorSpace = "rec2020-linear";
+    state.imageApplyAcr3 = true;
+    state.imageBitDepth = 16;
+    state.imageName = file.name || "RAW";
+    state.imageLoaded = true;
+    state.imageLabel = file.name || "RAW";
+    state.zoom = 1;
+    syncControls();
+    render();
+    showToast(`RAW 已载入 · 16 位管线 · ${decoded.width} × ${decoded.height}`);
+    generateFilmPreviews();
+  }
+
   async function loadFile(file) {
-    if (!file || !file.type.startsWith("image/") && !/\.tiff?$/i.test(file.name)) return showToast("请选择图片文件");
+    if (!file || !file.type.startsWith("image/") && !/\.tiff?$/i.test(file.name) && !isRawFile(file)) return showToast("请选择图片或 RAW 文件");
     const token = ++imageLoadToken;
+    if (isRawFile(file)) {
+      try {
+        renderStatus.textContent = "正在解码 RAW · 16 位管线";
+        const decoded = await decodeRawFile(file, token);
+        setRawImage(decoded, file, token);
+      } catch (error) {
+        if (token === imageLoadToken) {
+          renderStatus.textContent = "RAW 解码失败";
+          showToast(error?.message || "RAW 文件无法读取");
+        }
+      }
+      return;
+    }
+    if (/\.tiff?$/i.test(file.name || "")) {
+      try {
+        const decoded = await decodeUncompressedTiff16(file);
+        if (decoded) {
+          setDeepImage(decoded, file, token);
+          return;
+        }
+      } catch (error) {
+        console.warn("16-bit TIFF parser fallback", error);
+      }
+    }
     const colorSpace = await detectInputColorSpace(file);
     if (typeof window.createImageBitmap === "function") {
       try {
@@ -904,12 +1510,13 @@
         // is performed explicitly before the ProPhoto/ACR LUT path.
         const image = await window.createImageBitmap(file, { colorSpaceConversion: "none" });
         acceptImage(image, colorSpace, token);
+        generateFilmPreviews();
         return;
       } catch { /* fall through to the compatibility Image decoder */ }
     }
     const url = URL.createObjectURL(file);
     const image = new Image();
-    image.onload = () => acceptImage(image, "srgb", token, url);
+    image.onload = () => { acceptImage(image, "srgb", token, url); generateFilmPreviews(); };
     image.onerror = () => { URL.revokeObjectURL(url); showToast("图片无法读取"); };
     image.src = url;
   }
@@ -920,6 +1527,22 @@
     if (!source) return showToast("导出失败");
     const type = state.outputFormat || "image/jpeg";
     const quality = Number(state.quality) / 100;
+    if (type === "image/tiff") {
+      try {
+        const blob = encodeTiff16(source);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `film-whisper-${Date.now()}.tif`;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast("16 位 TIFF 已导出");
+      } catch (error) {
+        console.error(error);
+        showToast("TIFF 导出失败");
+      }
+      return;
+    }
     source.toBlob((blob) => {
       if (!blob) return showToast("导出失败");
       const url = URL.createObjectURL(blob);
@@ -931,6 +1554,54 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       showToast("文件已导出");
     }, type, quality);
+  }
+
+  function encodeTiff16(source) {
+    const width = source.width;
+    const height = source.height;
+    const pixels = source.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+    const entryCount = 10;
+    const bitsOffset = 8 + 2 + entryCount * 12 + 4;
+    const stripOffset = bitsOffset + 6;
+    const byteCount = width * height * 3 * 2;
+    const buffer = new ArrayBuffer(stripOffset + byteCount);
+    const view = new DataView(buffer);
+    const bytes = new Uint8Array(buffer);
+    bytes[0] = 0x49; bytes[1] = 0x49;
+    view.setUint16(2, 42, true);
+    view.setUint32(4, 8, true);
+    view.setUint16(8, entryCount, true);
+    let entry = 10;
+    const writeEntry = (tag, type, count, value) => {
+      view.setUint16(entry, tag, true);
+      view.setUint16(entry + 2, type, true);
+      view.setUint32(entry + 4, count, true);
+      if (type === 3 && count === 1) view.setUint16(entry + 8, value, true);
+      else view.setUint32(entry + 8, value, true);
+      entry += 12;
+    };
+    writeEntry(256, 4, 1, width);
+    writeEntry(257, 4, 1, height);
+    writeEntry(258, 3, 3, bitsOffset);
+    writeEntry(259, 3, 1, 1);
+    writeEntry(262, 3, 1, 2);
+    writeEntry(273, 4, 1, stripOffset);
+    writeEntry(277, 3, 1, 3);
+    writeEntry(278, 4, 1, height);
+    writeEntry(279, 4, 1, byteCount);
+    writeEntry(284, 3, 1, 1);
+    view.setUint32(entry, 0, true);
+    view.setUint16(bitsOffset, 16, true);
+    view.setUint16(bitsOffset + 2, 16, true);
+    view.setUint16(bitsOffset + 4, 16, true);
+    let at = stripOffset;
+    for (let i = 0; i < pixels.length; i += 4) {
+      view.setUint16(at, pixels[i] * 257, true);
+      view.setUint16(at + 2, pixels[i + 1] * 257, true);
+      view.setUint16(at + 4, pixels[i + 2] * 257, true);
+      at += 6;
+    }
+    return new Blob([buffer], { type: "image/tiff" });
   }
 
   function saveSettings() {
@@ -959,11 +1630,10 @@
 
   function setMode(mode) {
     state.mode = mode;
-    $$('.mode-tab').forEach((button) => button.classList.toggle("active", button.dataset.mode === mode));
     const modeNames = { develop: "开发", print: "打印", crop: "裁剪" };
-    $("#mobileMode").textContent = modeNames[mode] || "开发";
-    if (mode === "print") openSections(["frame", "output"]);
+    if (mode === "print") openSections(["screen", "frame", "output"]);
     if (mode === "crop") openSections(["crop"]);
+    syncControls();
     showToast(`${modeNames[mode] || "开发"}模式`);
   }
 
@@ -990,7 +1660,16 @@
       case "flip-h": pushHistory(); state.flipH = !state.flipH; render(); break;
       case "favorite": toggleFavorite(); break;
       case "auto-levels": pushHistory(); state.exposure = 0.12; state.contrast = 8; state.highlights = -10; state.shadows = 12; syncControls(); render(); showToast("已自动平衡层次"); break;
-      case "add-filter": showToast("已添加一个选择性滤镜"); break;
+      case "add-filter": {
+        pushHistory();
+        const filters = ["无", "Warm 1/8", "Warm 1/4", "Black Mist 1/8", "Glimmer 1/4", "Fog 1/8"];
+        const next = (filters.indexOf(state.filter) + 1) % filters.length;
+        state.filter = filters[next];
+        syncControls();
+        render();
+        showToast(state.filter === "无" ? "已移除滤镜" : `已应用${state.filter}滤镜`);
+        break;
+      }
       case "fullscreen": document.documentElement.requestFullscreen?.(); break;
       case "toggle-left": shell.classList.toggle("left-open"); break;
       case "toggle-right": shell.classList.toggle("right-open"); break;
@@ -1006,6 +1685,17 @@
     control.addEventListener("input", () => handleFieldChange(control, false));
     control.addEventListener("change", () => handleFieldChange(control, true));
   });
+  $$('[data-mobile-nav]').forEach((button) => button.addEventListener("click", () => {
+    const target = button.dataset.mobileNav;
+    if (target === "films") {
+      shell.classList.remove("right-open");
+      shell.classList.add("left-open");
+      return;
+    }
+    shell.classList.remove("left-open");
+    shell.classList.add("right-open");
+    setMode(target);
+  }));
   $$("[data-library-tab]").forEach((tab) => tab.addEventListener("click", () => {
     $$('[data-library-tab]').forEach((item) => item.classList.toggle("active", item === tab));
     const target = tab.dataset.libraryTab;
@@ -1019,7 +1709,6 @@
   stage.addEventListener("dragleave", () => stage.classList.remove("dragging"));
   stage.addEventListener("drop", (event) => { event.preventDefault(); stage.classList.remove("dragging"); loadFile(event.dataTransfer.files?.[0]); });
   $("#themeToggle").addEventListener("click", () => { document.body.classList.toggle("light"); localStorage.setItem("filmwhisper-theme", document.body.classList.contains("light") ? "light" : "dark"); });
-  $("#packButton").addEventListener("click", () => showToast("胶片包管理已打开本地模式"));
   $("#brandMenu").addEventListener("click", () => showToast("快捷键：O 打开 · Space 原图 · R 重置"));
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); }

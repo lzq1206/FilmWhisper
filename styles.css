@@ -46,6 +46,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .primary-button:hover { background: var(--accent-strong); transform: translateY(-1px); }
 .subtle-button { padding: 7px 9px; border-radius: 7px; color: var(--muted); font-size: 13px; }
 .mobile-toolbar { display: none; }
+.mobile-bottom-nav { display: none; }
 
 .editor-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--left-width) minmax(0, 1fr) var(--right-width); }
 .side-panel { min-height: 0; overflow: hidden; background: var(--panel); border-color: var(--line); display: flex; flex-direction: column; }
@@ -89,6 +90,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--stage); }
 .workspace-header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid var(--line-soft); }
 .mode-tabs { display: flex; gap: 3px; }
+.inspector-mode-tabs { margin: 0 15px 8px; padding-bottom: 3px; border-bottom: 1px solid var(--line-soft); }
 .mode-tab { position: relative; border: 0; padding: 8px 12px; border-radius: 6px; background: transparent; color: var(--quiet); font-size: 13px; cursor: pointer; }
 .mode-tab.active { color: var(--text); background: var(--panel); }
 .mode-tab.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -9px; height: 2px; background: var(--accent); border-radius: 2px; }
@@ -141,6 +143,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .histogram-legend { display: flex; justify-content: space-between; color: var(--quiet); font-size: 10px; }
 
 .hidden { display: none !important; }
+.mode-hidden { display: none !important; }
 .drawer-scrim { display: none; }
 
 body.light {
@@ -176,11 +179,11 @@ body.light .film-card .film-card-copy { text-shadow: 0 1px 8px #0007; }
   .top-actions .primary-button { width: 36px; padding: 0; justify-content: center; font-size: 0; }
   .top-actions .primary-button .icon { font-size: 17px; }
   .top-actions .text-button { padding-inline: 6px; }
-  .mobile-toolbar { height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .mobile-toolbar { display: none; }
   .compact-button { padding: 6px 8px; border-radius: 6px; color: var(--muted); font-size: 12px; }
   .mobile-mode { color: var(--text); font-size: 12px; font-weight: 700; }
   .editor-layout { display: block; position: relative; }
-  .workspace { height: calc(100dvh - 98px); min-height: 0; }
+  .workspace { height: calc(100dvh - 120px); min-height: 0; }
   .side-panel { position: fixed; top: 0; bottom: 0; height: 100dvh; z-index: 20; width: min(84vw, 320px); box-shadow: 18px 0 50px #0008; transition: transform .22s ease; }
   .left-panel { left: 0; transform: translateX(-105%); }
   .right-panel { right: 0; transform: translateX(105%); box-shadow: -18px 0 50px #0008; }
@@ -192,6 +195,13 @@ body.light .film-card .film-card-copy { text-shadow: 0 1px 8px #0007; }
   .workspace-header { height: 48px; padding: 0 12px; }
   .workspace-footer { padding: 0 10px; }
   .footer-center { display: none; }
+  .app-shell { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .mobile-bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; height: calc(58px + env(safe-area-inset-bottom)); padding: 5px 8px env(safe-area-inset-bottom); display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; background: color-mix(in srgb, var(--panel) 96%, transparent); border-top: 1px solid var(--line); z-index: 30; backdrop-filter: blur(18px); }
+  .mobile-bottom-nav button { border: 0; border-radius: 8px; background: transparent; color: var(--quiet); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font: inherit; cursor: pointer; }
+  .mobile-bottom-nav button span { font-size: 18px; line-height: 1; }
+  .mobile-bottom-nav button small { font-size: 10px; }
+  .mobile-bottom-nav button.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .inspector-mode-tabs { margin-inline: 10px; }
 }
 
 @media (max-width: 480px) {
