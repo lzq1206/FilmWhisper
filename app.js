@@ -125,7 +125,7 @@
   };
   const filmPreviewSources = new Map();
   let filmPreviewToken = 0;
-  const LUT_ASSET_VERSION = "20261001-shadow-safe-v2";
+  const LUT_ASSET_VERSION = "20261001-acr-domain-v3";
   function parseLutAsset(buffer, assetName) {
       const view = new DataView(buffer);
       const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
