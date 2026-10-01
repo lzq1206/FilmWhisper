@@ -337,7 +337,7 @@ function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, 
   const mix = clamp01(amount);
   const scale = outputType === "rgba16" ? 65535 : 255;
   const sceneScale = Number(values?.rawSceneScale);
-  const sceneFactor = Number.isFinite(sceneScale) && sceneScale > 0 ? sceneScale / 65535 : 1;
+  const sceneFactor = Number.isFinite(sceneScale) && sceneScale > 0 ? sceneScale : 1;
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     const sourceIndex = pixel * 3;
     const original = [source[sourceIndex] * sceneFactor / 65535, source[sourceIndex + 1] * sceneFactor / 65535, source[sourceIndex + 2] * sceneFactor / 65535];

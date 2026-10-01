@@ -118,6 +118,7 @@
   const lutState = {
     buffer: null,
     renderedBuffer: null,
+    rawBuffer: null,
     size: lutConfig?.size || 32,
     count: lutConfig?.count || 0,
     ready: false,
@@ -125,7 +126,7 @@
   };
   const filmPreviewSources = new Map();
   let filmPreviewToken = 0;
-  const LUT_ASSET_VERSION = "20261001-acr-domain-v5";
+  const LUT_ASSET_VERSION = "20261001-acr-measured";
   function parseLutAsset(buffer, assetName) {
       const view = new DataView(buffer);
       const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
@@ -144,23 +145,21 @@
     .then(async (buffer) => {
       const rawAsset = parseLutAsset(buffer, "RAW LUT asset");
       lutState.buffer = rawAsset.buffer;
-      // Rendered-input LUTs were added for Adobe RGB JPEG/PNG/TIFF imports.
-      // Keep the RAW bank as a backwards-compatible fallback if an older
-      // static deployment has not copied the companion asset yet.
-      try {
-        const renderedResponse = await fetch(`film-luts-rendered.bin?v=${LUT_ASSET_VERSION}`);
-        if (renderedResponse.ok) {
-          const renderedBuffer = await renderedResponse.arrayBuffer();
-          lutState.renderedBuffer = parseLutAsset(renderedBuffer, "Rendered LUT asset").buffer;
-        }
-      } catch {
-        // The RAW bank remains usable when the optional companion is absent.
-      }
-      if (!lutState.renderedBuffer) lutState.renderedBuffer = buffer;
+      const responses = await Promise.all([
+        fetch(`film-luts-rendered.bin?v=${LUT_ASSET_VERSION}`),
+        fetch(`film-luts-raw.bin?v=${LUT_ASSET_VERSION}`),
+      ]);
+      if (responses.some((response) => !response.ok)) throw new Error("Input LUT asset unavailable");
+      const [renderedBuffer, rawBuffer] = await Promise.all(responses.map((response) => response.arrayBuffer()));
+      lutState.renderedBuffer = parseLutAsset(renderedBuffer, "Rendered LUT asset").buffer;
+      lutState.rawBuffer = parseLutAsset(rawBuffer, "Decoder-input LUT asset").buffer;
       lutState.size = rawAsset.size;
       lutState.count = rawAsset.count;
       lutState.ready = true;
-      if (state.imageLoaded) render();
+      if (state.imageLoaded) {
+        render();
+        generateFilmPreviews();
+      }
       return buffer;
     })
     .catch((error) => {
@@ -527,14 +526,14 @@
     if (!lutState.ready || !lutState.buffer) return null;
     const profile = filmPresets.find((item) => item.id === state.selectedFilm) || filmPresets[0];
     if (!profile) return null;
-    const buffer = state.rawImage ? lutState.buffer : (lutState.renderedBuffer || lutState.buffer);
+    const buffer = state.rawImage ? lutState.rawBuffer : lutState.renderedBuffer;
     const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
     return new Uint16Array(buffer, offset, lutState.size ** 3 * 3);
   }
 
   function getFilmLut(profile) {
     if (!lutState.ready || !lutState.buffer || !profile) return null;
-    const buffer = state.rawImage ? lutState.buffer : (lutState.renderedBuffer || lutState.buffer);
+    const buffer = state.rawImage ? lutState.rawBuffer : lutState.renderedBuffer;
     const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
     return new Uint16Array(buffer, offset, lutState.size ** 3 * 3);
   }
@@ -578,7 +577,7 @@
     // point.  The upstream decoder exposes that point as sceneScale; applying
     // it before the matrix keeps RAW exposure consistent with Phocus/ACR.
     const sceneScale = Number(values?.rawSceneScale);
-    const sceneFactor = Number.isFinite(sceneScale) && sceneScale > 0 ? sceneScale / 65535 : 1;
+    const sceneFactor = Number.isFinite(sceneScale) && sceneScale > 0 ? sceneScale : 1;
     const applyAcr3 = Boolean(values?.imageApplyAcr3 ?? state.imageApplyAcr3);
     for (let pixel = 0; pixel < width * height; pixel += 1) {
       const si = pixel * 3;
@@ -667,7 +666,7 @@
         acr3Inverse,
       };
       for (let index = 0; index < workerCount(); index += 1) {
-        const worker = new Worker("pixel-worker.js");
+        const worker = new Worker(`pixel-worker.js?v=${LUT_ASSET_VERSION}`);
         worker.addEventListener("message", (event) => {
           const message = event.data || {};
           if (!message.id) return;
@@ -1168,7 +1167,7 @@
       selectedFilm: defaultFilmId,
       imageColorSpace: state.imageColorSpace,
       imageApplyAcr3: Boolean(state.rawImage),
-      rawSceneScale: state.rawImage?.sceneScale || 65535,
+      rawSceneScale: state.rawImage?.sceneScale || 1,
     };
     filmPreviewSources.clear();
     renderFilmCards();
@@ -1238,7 +1237,7 @@
         size.width,
         size.height,
         useBefore ? 0 : Number(values.filmAmount) / 100,
-        { ...values, imageApplyAcr3: state.imageApplyAcr3, rawSceneScale: state.rawImage?.sceneScale || 65535 },
+        { ...values, imageApplyAcr3: state.imageApplyAcr3, rawSceneScale: state.rawImage?.sceneScale || 1 },
         { sourceType: state.rawImage ? "raw16" : "rgba16", outputType: "rgba8" },
       );
       const data = new ImageData(transformed.data, size.width, size.height);
@@ -1773,7 +1772,7 @@
       height: decoded.height,
       colors: decoded.colors,
       data: decoded.pixels,
-      sceneScale: Number.isFinite(decoded.sceneScale) && decoded.sceneScale > 0 ? decoded.sceneScale : 65535,
+      sceneScale: Number.isFinite(decoded.sceneScale) && decoded.sceneScale > 0 ? decoded.sceneScale : 1,
       profile: decoded.profile,
       sceneKelvin: decoded.sceneKelvin,
     };
