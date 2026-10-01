@@ -108,6 +108,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .canvas-stage::before { content: ""; position: absolute; inset: 18px; border: 1px solid #ffffff05; pointer-events: none; }
 #previewCanvas { display: none; max-width: 100%; max-height: 100%; border-radius: 2px; background: #1a1b1f; box-shadow: 0 24px 70px #0008; image-rendering: auto; }
 #previewCanvas.ready { display: block; }
+#previewCanvas.compare-active { clip-path: inset(0 0 0 50%); }
 .crop-overlay { position: absolute; z-index: 4; cursor: crosshair; touch-action: none; }
 .crop-selection { position: absolute; min-width: 2px; min-height: 2px; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px #0006, 0 0 0 1px #fff8; pointer-events: none; background-image: linear-gradient(to right, transparent 32.8%, #fff8 33%, transparent 33.2%, transparent 66.1%, #fff8 66.3%, transparent 66.6%), linear-gradient(to bottom, transparent 32.8%, #fff8 33%, transparent 33.2%, transparent 66.1%, #fff8 66.3%, transparent 66.6%); }
 .empty-state { position: relative; z-index: 1; text-align: center; padding: 28px; transform: translateY(calc(-1 * clamp(36px, 10vh, 110px))); }

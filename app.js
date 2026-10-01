@@ -1254,7 +1254,10 @@
       data.data.set(processed);
       sourceContext.putImageData(data, 0, 0);
     }
-    return transformCanvas(sourceCanvas, values);
+    const geometry = useBefore && options.matchGeometry
+      ? { ...values, aspect: state.aspect, straighten: state.straighten, frameStyle: state.frameStyle, frameSize: state.frameSize }
+      : values;
+    return transformCanvas(sourceCanvas, geometry);
   }
 
   function drawCanvas(destination, source) {
@@ -1400,11 +1403,12 @@
       if (token !== renderToken) return;
       try {
         const after = await makeProcessedCanvas(false);
-        const before = state.before || state.compare ? await makeProcessedCanvas(true) : null;
+        const showCompare = state.compare && !state.before;
+        const before = state.before || showCompare ? await makeProcessedCanvas(true, { matchGeometry: showCompare }) : null;
         if (token !== renderToken) return;
         drawCanvas(canvas, state.before ? before : after);
         updateHistogram(canvas);
-        if (state.compare) {
+        if (showCompare) {
           drawCanvas(ensureCompareCanvas(), before);
           compareCanvas.classList.remove("hidden");
           canvas.classList.add("compare-active");
@@ -1420,7 +1424,9 @@
         canvas.style.border = "0";
         canvas.style.padding = "0";
         lastCanvasSize = { width: canvas.width, height: canvas.height };
-        renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${activeFilmLabel.textContent}`;
+        renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${state.before ? "原图" : activeFilmLabel.textContent}`;
+        $$('[data-action="compare"]').forEach((button) => button.setAttribute("aria-pressed", String(showCompare)));
+        $$('[data-action="before"]').forEach((button) => button.setAttribute("aria-pressed", String(state.before)));
         updateCropOverlay();
       } catch (error) {
         if (token === renderToken) renderStatus.textContent = "渲染失败 · 请重试";
