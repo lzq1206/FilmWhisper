@@ -113,6 +113,13 @@
             <button class="mode-tab" data-mode="crop">裁剪</button>
           </nav>
           <div class="inspector-scroll" id="inspectorScroll">
+            <section class="inspector-section open" data-section="histogram">
+              <button class="section-heading" type="button"><span>直方图</span><span class="section-chevron">⌄</span></button>
+              <div class="section-body">
+                <svg id="rgbHistogram" class="rgb-histogram" viewBox="0 0 256 100" role="img" aria-label="RGB 三色直方图"><path data-hist-channel="0"/><path data-hist-channel="1"/><path data-hist-channel="2"/></svg>
+                <div class="histogram-legend"><span>阴影</span><span>中间调</span><span>高光</span></div>
+              </div>
+            </section>
             <section class="inspector-section open" data-section="light">
               <button class="section-heading" type="button"><span>明暗</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
@@ -120,6 +127,23 @@
                 <div class="control-row"><label for="contrast">对比度</label><output data-output="contrast">0</output><input id="contrast" data-field="contrast" type="range" min="-100" max="100" step="1" value="0" /></div>
                 <div class="control-row"><label for="highlights">高光</label><output data-output="highlights">0</output><input id="highlights" data-field="highlights" type="range" min="-100" max="100" step="1" value="0" /></div>
                 <div class="control-row"><label for="shadows">阴影</label><output data-output="shadows">0</output><input id="shadows" data-field="shadows" type="range" min="-100" max="100" step="1" value="0" /></div>
+              </div>
+            </section>
+            <section class="inspector-section" data-section="curves">
+              <button class="section-heading" type="button"><span>曲线</span><span class="section-chevron">⌄</span></button>
+              <div class="section-body">
+                <div class="select-row"><label for="curveChannel">通道</label><select id="curveChannel"><option value="master">整体明度（RGB）</option><option value="red">红色 R</option><option value="green">绿色 G</option><option value="blue">蓝色 B</option></select></div>
+                <svg id="curveEditor" class="curve-editor" viewBox="0 0 260 260" tabindex="0" role="group" aria-label="点击添加点，拖动调整，Delete 删除选中点">
+                  <defs><linearGradient id="curveRamp"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient></defs>
+                  <rect x="18" y="18" width="224" height="224" fill="#141619"/>
+                  <path class="curve-grid" d="M18 18H242V242H18Z M74 18V242 M130 18V242 M186 18V242 M18 74H242 M18 130H242 M18 186H242"/>
+                  <path class="curve-identity" d="M18 242L242 18"/>
+                  <path id="curvePath" fill="none" stroke-width="2"/>
+                  <g id="curvePoints"></g><rect x="18" y="247" width="224" height="5" fill="url(#curveRamp)"/>
+                </svg>
+                <div class="curve-coordinates"><label>输入 <input id="curveInput" type="number" min="0" max="255" step="1" value="0"/></label><label>输出 <input id="curveOutput" type="number" min="0" max="255" step="1" value="0"/></label></div>
+                <div class="button-grid"><button class="tool-button" id="curveReset">重置此通道</button><button class="tool-button" id="curvesReset">重置全部曲线</button></div>
+                <div class="crop-help">点击添加点 · 拖动调整 · 双击或 Delete 删除中间点</div>
               </div>
             </section>
             <section class="inspector-section open" data-section="color">
@@ -181,30 +205,6 @@
                 <div class="control-row"><label for="screenExposure">屏幕曝光</label><output data-output="screenExposure">0</output><input id="screenExposure" data-field="screenExposure" type="range" min="-3" max="3" step="0.01" value="0" /></div>
                 <div class="select-row"><label for="enlarger">放大设备</label><select id="enlarger" data-field="enlarger"><option value="Diffuser">散射式</option><option value="Condenser">聚光式</option><option value="Light Box">灯箱</option><option value="Scanner">扫描仪</option></select></div>
                 <div class="control-row"><label for="printerPreflash">预闪</label><output data-output="printerPreflash">0</output><input id="printerPreflash" data-field="printerPreflash" type="range" min="0" max="100" value="0" /></div>
-              </div>
-            </section>
-            <section class="inspector-section" data-section="histogram">
-              <button class="section-heading" type="button"><span>直方图</span><span class="section-chevron">⌄</span></button>
-              <div class="section-body">
-                <svg id="rgbHistogram" class="rgb-histogram" viewBox="0 0 256 100" role="img" aria-label="RGB 三色直方图"><path data-hist-channel="0"/><path data-hist-channel="1"/><path data-hist-channel="2"/></svg>
-                <div class="histogram-legend"><span>阴影</span><span>中间调</span><span>高光</span></div>
-              </div>
-            </section>
-            <section class="inspector-section" data-section="curves">
-              <button class="section-heading" type="button"><span>曲线</span><span class="section-chevron">⌄</span></button>
-              <div class="section-body">
-                <div class="select-row"><label for="curveChannel">通道</label><select id="curveChannel"><option value="master">整体明度（RGB）</option><option value="red">红色 R</option><option value="green">绿色 G</option><option value="blue">蓝色 B</option></select></div>
-                <svg id="curveEditor" class="curve-editor" viewBox="0 0 260 260" tabindex="0" role="group" aria-label="点击添加点，拖动调整，Delete 删除选中点">
-                  <defs><linearGradient id="curveRamp"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient></defs>
-                  <rect x="18" y="18" width="224" height="224" fill="#141619"/>
-                  <path class="curve-grid" d="M18 18H242V242H18Z M74 18V242 M130 18V242 M186 18V242 M18 74H242 M18 130H242 M18 186H242"/>
-                  <path class="curve-identity" d="M18 242L242 18"/>
-                  <path id="curvePath" fill="none" stroke-width="2"/>
-                  <g id="curvePoints"></g><rect x="18" y="247" width="224" height="5" fill="url(#curveRamp)"/>
-                </svg>
-                <div class="curve-coordinates"><label>输入 <input id="curveInput" type="number" min="0" max="255" step="1" value="0"/></label><label>输出 <input id="curveOutput" type="number" min="0" max="255" step="1" value="0"/></label></div>
-                <div class="button-grid"><button class="tool-button" id="curveReset">重置此通道</button><button class="tool-button" id="curvesReset">重置全部曲线</button></div>
-                <div class="crop-help">点击添加点 · 拖动调整 · 双击或 Delete 删除中间点</div>
               </div>
             </section>
             <section class="inspector-section" data-section="crop">
