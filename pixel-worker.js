@@ -8,6 +8,7 @@
  */
 
 "use strict";
+importScripts("curves.js?v=20261001-curves");
 
 const workerState = {
   size: 32,
@@ -189,7 +190,7 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
     || values.negativeViewing !== "Reference Exposure"
     || values.outputMedium !== "Photo"
     || values.viewingIlluminant !== "D50";
-  if (!hasSecondaryWork) return source;
+  if (!hasSecondaryWork) return FilmCurves.apply(source, values.curves);
 
   const output = new Uint8ClampedArray(source);
   const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
@@ -292,7 +293,7 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       output[i + 2] = Math.max(0, Math.min(255, Math.round(blue * 255)));
     }
   }
-  return output;
+  return FilmCurves.apply(output, values.curves);
 }
 
 function renderChunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3) {
@@ -372,7 +373,7 @@ function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, 
     void x; void y;
   }
   if (outputType === "rgba8") return processSecondary(output, width, height, values, startRow, fullHeight);
-  return output;
+  return FilmCurves.apply(output, values.curves);
 }
 
 function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3, outputType) {
@@ -407,7 +408,7 @@ function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight,
     output[oi + 3] = scale;
   }
   if (outputType === "rgba8") return processSecondary(output, width, height, values, startRow, fullHeight);
-  return output;
+  return FilmCurves.apply(output, values.curves);
 }
 
 self.onmessage = (event) => {

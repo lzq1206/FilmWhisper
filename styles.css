@@ -151,10 +151,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .tool-button { min-height: 30px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 11px; }
 .tool-button:hover { border-color: #626872; }
 .crop-help { color: var(--quiet); font-size: 11px; line-height: 1.45; }
-.mini-histogram { height: 70px; display: flex; align-items: end; gap: 2px; padding: 8px 7px 5px; border: 1px solid var(--line); border-radius: 7px; background: linear-gradient(180deg, #191b1f, #111215); }
-.mini-histogram i { flex: 1; min-height: 9%; border-radius: 2px 2px 0 0; background: linear-gradient(180deg, #d7a273, #586d9f); opacity: .78; }
-.mini-histogram i:nth-child(1) { height: 18%; } .mini-histogram i:nth-child(2) { height: 32%; } .mini-histogram i:nth-child(3) { height: 48%; } .mini-histogram i:nth-child(4) { height: 60%; } .mini-histogram i:nth-child(5) { height: 74%; } .mini-histogram i:nth-child(6) { height: 86%; } .mini-histogram i:nth-child(7) { height: 100%; } .mini-histogram i:nth-child(8) { height: 78%; } .mini-histogram i:nth-child(9) { height: 63%; } .mini-histogram i:nth-child(10) { height: 42%; } .mini-histogram i:nth-child(11) { height: 28%; } .mini-histogram i:nth-child(12) { height: 15%; }
 .histogram-legend { display: flex; justify-content: space-between; color: var(--quiet); font-size: 10px; }
+.rgb-histogram { display:block; width:100%; height:100px; border:1px solid var(--line); border-radius:7px; background:#111215; }
+.rgb-histogram path { stroke-width:1; fill-opacity:.18; vector-effect:non-scaling-stroke; }
+.rgb-histogram [data-hist-channel="0"] { stroke:#ff6868; fill:#ff4141; }
+.rgb-histogram [data-hist-channel="1"] { stroke:#65db87; fill:#35d461; }
+.rgb-histogram [data-hist-channel="2"] { stroke:#719cff; fill:#4884ff; }
+.curve-editor { display:block; width:100%; aspect-ratio:1; touch-action:none; cursor:crosshair; border:1px solid var(--line); border-radius:7px; background:#101214; }
+.curve-editor:focus { outline:1px solid var(--accent); }
+.curve-grid { fill:none; stroke:#ffffff20; stroke-width:1; }
+.curve-identity { fill:none; stroke:#ffffff28; stroke-dasharray:4 4; }
+.curve-editor circle { cursor:grab; stroke-width:2; }
+.curve-coordinates { display:flex; gap:12px; margin:8px 0; color:var(--quiet); font-size:11px; }
+.curve-coordinates label { display:flex; align-items:center; gap:6px; }
+.curve-coordinates input { width:58px; min-width:0; padding:5px; color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:4px; }
 
 .hidden { display: none !important; }
 .mode-hidden { display: none !important; }

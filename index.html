@@ -7,7 +7,7 @@
     <meta name="description" content="在浏览器本地完成胶片模拟、照片调整和导出。" />
     <meta name="theme-color" content="#0c0d0f" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-    <link rel="stylesheet" href="styles.css?v=20261001-compare-fix" />
+    <link rel="stylesheet" href="styles.css?v=20261001-curves" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -186,8 +186,25 @@
             <section class="inspector-section" data-section="histogram">
               <button class="section-heading" type="button"><span>直方图</span><span class="section-chevron">⌄</span></button>
               <div class="section-body">
-                <div class="mini-histogram" aria-label="直方图"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <svg id="rgbHistogram" class="rgb-histogram" viewBox="0 0 256 100" role="img" aria-label="RGB 三色直方图"><path data-hist-channel="0"/><path data-hist-channel="1"/><path data-hist-channel="2"/></svg>
                 <div class="histogram-legend"><span>阴影</span><span>中间调</span><span>高光</span></div>
+              </div>
+            </section>
+            <section class="inspector-section" data-section="curves">
+              <button class="section-heading" type="button"><span>曲线</span><span class="section-chevron">⌄</span></button>
+              <div class="section-body">
+                <div class="select-row"><label for="curveChannel">通道</label><select id="curveChannel"><option value="master">整体明度（RGB）</option><option value="red">红色 R</option><option value="green">绿色 G</option><option value="blue">蓝色 B</option></select></div>
+                <svg id="curveEditor" class="curve-editor" viewBox="0 0 260 260" tabindex="0" role="group" aria-label="点击添加点，拖动调整，Delete 删除选中点">
+                  <defs><linearGradient id="curveRamp"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient></defs>
+                  <rect x="18" y="18" width="224" height="224" fill="#141619"/>
+                  <path class="curve-grid" d="M18 18H242V242H18Z M74 18V242 M130 18V242 M186 18V242 M18 74H242 M18 130H242 M18 186H242"/>
+                  <path class="curve-identity" d="M18 242L242 18"/>
+                  <path id="curvePath" fill="none" stroke-width="2"/>
+                  <g id="curvePoints"></g><rect x="18" y="247" width="224" height="5" fill="url(#curveRamp)"/>
+                </svg>
+                <div class="curve-coordinates"><label>输入 <input id="curveInput" type="number" min="0" max="255" step="1" value="0"/></label><label>输出 <input id="curveOutput" type="number" min="0" max="255" step="1" value="0"/></label></div>
+                <div class="button-grid"><button class="tool-button" id="curveReset">重置此通道</button><button class="tool-button" id="curvesReset">重置全部曲线</button></div>
+                <div class="crop-help">点击添加点 · 拖动调整 · 双击或 Delete 删除中间点</div>
               </div>
             </section>
             <section class="inspector-section" data-section="crop">
@@ -222,6 +239,7 @@
       <input id="fileInput" type="file" accept="image/*,.tif,.tiff,.dng,.nef,.nrw,.cr2,.cr3,.arw,.raf,.rw2,.orf,.pef,.srw,.3fr,.iiq,.x3f,.raw" hidden />
     </div>
     <script src="film-profiles.js?v=20261001-acr-measured"></script>
-    <script src="app.js?v=20261001-compare-fix"></script>
+    <script src="curves.js?v=20261001-curves"></script>
+    <script src="app.js?v=20261001-curves"></script>
   </body>
 </html>

@@ -24,9 +24,12 @@
   const modePanelEyebrow = $("#modePanelEyebrow");
   const modePanelTitle = $("#modePanelTitle");
   const mobileBottomNav = $("#mobileBottomNav");
-  const histogramBars = $$(".mini-histogram i");
+  const histogramPaths = $$("#rgbHistogram path");
+  const curveEditor = $("#curveEditor");
+  let curveChannel = "master", curvePoint = 0, curveDragging = false, curveTimer = null;
 
   const defaultValues = {
+    curves: FilmCurves.identity(),
     exposure: 0,
     contrast: 0,
     highlights: 0,
@@ -260,12 +263,13 @@
     $$(".mode-tab").forEach((button) => button.classList.toggle("active", button.dataset.mode === state.mode));
     $$('[data-mobile-nav]').forEach((button) => button.classList.toggle("active", button.dataset.mobileNav === state.mobileNav));
     syncModeSections();
+    drawCurveEditor();
     document.body.classList.toggle("before-mode", state.before);
   }
 
   function syncModeSections() {
     const visible = {
-      develop: new Set(["light", "color", "film", "grain", "halation", "lens", "histogram"]),
+      develop: new Set(["light", "color", "film", "grain", "halation", "lens", "histogram", "curves"]),
       print: new Set(["screen", "frame", "output", "histogram"]),
       crop: new Set(["crop"]),
     }[state.mode] || new Set();
@@ -666,7 +670,7 @@
         acr3Inverse,
       };
       for (let index = 0; index < workerCount(); index += 1) {
-        const worker = new Worker(`pixel-worker.js?v=${LUT_ASSET_VERSION}`);
+        const worker = new Worker("pixel-worker.js?v=20261001-curves");
         worker.addEventListener("message", (event) => {
           const message = event.data || {};
           if (!message.id) return;
@@ -696,6 +700,7 @@
       "paperGrade", "screenExposure", "enlarger", "printerPreflash", "outputMedium",
       "rawSceneScale",
       "imageColorSpace", "imageApplyAcr3",
+      "curves",
     ];
     return fields.reduce((result, field) => {
       result[field] = values?.[field];
@@ -711,11 +716,11 @@
     if (!pool || !lut || !colorMatrices.srgbToXyz) {
       if (sourceType === "raw16") {
         const result = applyRaw16Lut(source, width, height, amount, values, outputType, lut);
-        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : result, secondaryApplied: outputType === "rgba8" });
+        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : FilmCurves.apply(result, values.curves), secondaryApplied: outputType === "rgba8" });
       }
       if (sourceType === "rgba16") {
         const result = applyRgba16Lut(source, width, height, amount, values, outputType, lut);
-        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : result, secondaryApplied: outputType === "rgba8" });
+        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : FilmCurves.apply(result, values.curves), secondaryApplied: outputType === "rgba8" });
       }
       return Promise.resolve({ data: applyPrimaryLut(source, amount, values, lut), secondaryApplied: false });
     }
@@ -803,7 +808,7 @@
       || values.negativeViewing !== "Reference Exposure"
       || values.outputMedium !== "Photo"
       || values.viewingIlluminant !== "D50";
-    if (!hasSecondaryWork) return source;
+    if (!hasSecondaryWork) return FilmCurves.apply(source, values.curves);
     const output = new Uint8ClampedArray(source);
     const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
     const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0)
@@ -910,7 +915,7 @@
         output[i + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
       }
     }
-    return output;
+    return FilmCurves.apply(output, values.curves);
   }
 
   function fitSize() {
@@ -1292,25 +1297,92 @@
   }
 
   function updateHistogram(source) {
-    if (!source || !histogramBars.length || !source.width || !source.height) return;
+    if (!source || !histogramPaths.length || !source.width || !source.height) return;
     try {
       const data = source.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, source.width, source.height).data;
-      const bins = new Array(histogramBars.length).fill(0);
+      const bins = Array.from({ length: 3 }, () => new Float64Array(256));
       const pixelCount = source.width * source.height;
       const stride = Math.max(1, Math.ceil(pixelCount / 180000));
       for (let pixel = 0; pixel < pixelCount; pixel += stride) {
         const index = pixel * 4;
-        const luminance = (data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722) / 255;
-        bins[Math.min(bins.length - 1, Math.floor(luminance * bins.length))] += 1;
+        if (data[index + 3] === 0) continue;
+        for (let channel = 0; channel < 3; channel++) bins[channel][data[index + channel]]++;
       }
-      const peak = Math.max(1, ...bins);
-      histogramBars.forEach((bar, index) => {
-        bar.style.height = `${Math.max(6, Math.round((bins[index] / peak) * 100))}%`;
+      // Shared vertical scale preserves relative R/G/B counts. A small
+      // display-only smoothing joins the samples; it does not alter pixels.
+      const smooth = bins.map(b => Array.from(b, (v, i) => (b[Math.max(0,i-1)] + 2*v + b[Math.min(255,i+1)]) / 4));
+      const peak = Math.max(1, ...smooth.flat());
+      histogramPaths.forEach((path, channel) => {
+        path.setAttribute("d", "M0 100 " + smooth[channel].map((v, i) => `L${i} ${(98 - v / peak * 94).toFixed(2)}`).join(" ") + " L255 100 Z");
       });
     } catch {
       // The canvas may be unavailable briefly while an image is replaced.
     }
   }
+
+  function drawCurveEditor() {
+    const points = FilmCurves.points(state.curves?.[curveChannel]);
+    curvePoint = Math.max(0, Math.min(points.length - 1, curvePoint));
+    const colors = { master: "#f1d4b2", red: "#ff6868", green: "#65db87", blue: "#719cff" };
+    const table = FilmCurves.table(points), color = colors[curveChannel];
+    $("#curvePath").setAttribute("stroke", color);
+    $("#curvePath").setAttribute("d", Array.from({ length: 225 }, (_, i) => `${i ? "L" : "M"}${18+i} ${242-FilmCurves.sample(table, i/224)*224}`).join(" "));
+    $("#curvePoints").innerHTML = points.map((p, i) => `<circle data-point="${i}" cx="${18+p[0]*224}" cy="${242-p[1]*224}" r="${i===curvePoint?5:4}" fill="${i===curvePoint?color:'#15171a'}" stroke="${color}"/>`).join("");
+    $("#curveInput").value = Math.round(points[curvePoint][0]*255);
+    $("#curveOutput").value = Math.round(points[curvePoint][1]*255);
+    $("#curveInput").disabled = curvePoint===0 || curvePoint===points.length-1;
+  }
+
+  function curvePosition(event) {
+    const rect = curveEditor.getBoundingClientRect();
+    return [(event.clientX-rect.left)/rect.width*260, (event.clientY-rect.top)/rect.height*260]
+      .map((v,i) => Math.max(0,Math.min(1, i ? (242-v)/224 : (v-18)/224)));
+  }
+
+  function updateCurvePoint(x, y) {
+    const points = FilmCurves.points(state.curves?.[curveChannel]);
+    if (curvePoint===0) x=0;
+    else if (curvePoint===points.length-1) x=1;
+    else x=Math.max(points[curvePoint-1][0]+1/1024, Math.min(points[curvePoint+1][0]-1/1024,x));
+    points[curvePoint]=[x,Math.max(0,Math.min(1,y))];
+    state.curves={...state.curves,[curveChannel]:points};
+    drawCurveEditor();
+    if (!curveTimer) curveTimer=setTimeout(()=>{curveTimer=null;render();},120);
+  }
+
+  function commitCurve() { clearTimeout(curveTimer);curveTimer=null;pushHistory();render(); }
+  function deleteCurvePoint() {
+    const p=FilmCurves.points(state.curves?.[curveChannel]);
+    if(curvePoint===0 || curvePoint===p.length-1)return;
+    pushHistory();p.splice(curvePoint,1);state.curves={...state.curves,[curveChannel]:p};drawCurveEditor();commitCurve();
+  }
+  $("#curveChannel").addEventListener("change",event=>{curveChannel=event.target.value;curvePoint=0;drawCurveEditor();});
+  curveEditor.addEventListener("pointerdown", event=>{
+    if(event.button!==0)return;
+    const pos=curvePosition(event), p=FilmCurves.points(state.curves?.[curveChannel]);
+    let closest=-1, distance=Infinity;
+    p.forEach((v,i)=>{const d=Math.hypot(v[0]-pos[0],v[1]-pos[1]);if(d<distance){distance=d;closest=i;}});
+    pushHistory();
+    if(distance>.055 && p.length<16 && pos[0]>1/1024 && pos[0]<1-1/1024 && p.every(v=>Math.abs(v[0]-pos[0])>1/1024)){
+      p.push(pos);p.sort((a,b)=>a[0]-b[0]);curvePoint=p.indexOf(pos);state.curves={...state.curves,[curveChannel]:p};
+    } else curvePoint=closest;
+    curveDragging=true;curveEditor.setPointerCapture(event.pointerId);curveEditor.focus();event.preventDefault();
+    updateCurvePoint(...pos);
+  });
+  curveEditor.addEventListener("pointermove",event=>{if(curveDragging)updateCurvePoint(...curvePosition(event));});
+  function finishCurve(){if(curveDragging){curveDragging=false;commitCurve();}}
+  curveEditor.addEventListener("pointerup",finishCurve);curveEditor.addEventListener("pointercancel",finishCurve);
+  curveEditor.addEventListener("dblclick",deleteCurvePoint);
+  curveEditor.addEventListener("keydown",event=>{
+    if(event.key==="Delete" || event.key==="Backspace"){event.preventDefault();deleteCurvePoint();}
+  });
+  ["curveInput","curveOutput"].forEach(id=>$("#"+id).addEventListener("change",()=>{
+    const x=Number($("#curveInput").value)/255,y=Number($("#curveOutput").value)/255;
+    if(!Number.isFinite(x)||!Number.isFinite(y))return;
+    pushHistory();updateCurvePoint(x,y);commitCurve();
+  }));
+  $("#curveReset").addEventListener("click",()=>{pushHistory();state.curves={...state.curves,[curveChannel]:[[0,0],[1,1]]};drawCurveEditor();commitCurve();});
+  $("#curvesReset").addEventListener("click",()=>{pushHistory();state.curves=FilmCurves.identity();drawCurveEditor();commitCurve();});
 
   function ensureCompareCanvas() {
     if (compareCanvas) return compareCanvas;
