@@ -125,7 +125,7 @@
   };
   const filmPreviewSources = new Map();
   let filmPreviewToken = 0;
-  const LUT_ASSET_VERSION = "20261001-dark-safe-rendered";
+  const LUT_ASSET_VERSION = "20261001-shadow-safe-v2";
   function parseLutAsset(buffer, assetName) {
       const view = new DataView(buffer);
       const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
@@ -1267,6 +1267,28 @@
     destinationContext.drawImage(source, 0, 0);
   }
 
+  function fitCanvasToStage() {
+    if (!canvas.width || !canvas.height) return;
+    const stageStyle = window.getComputedStyle(stage);
+    const horizontalPadding = parseFloat(stageStyle.paddingLeft || 0) + parseFloat(stageStyle.paddingRight || 0);
+    const verticalPadding = parseFloat(stageStyle.paddingTop || 0) + parseFloat(stageStyle.paddingBottom || 0);
+    const availableWidth = Math.max(1, stage.clientWidth - horizontalPadding);
+    const availableHeight = Math.max(1, stage.clientHeight - verticalPadding);
+    const fitScale = Math.min(1, availableWidth / canvas.width, availableHeight / canvas.height);
+    // Give the DOM canvas an explicit contained box.  Relying only on
+    // max-width/max-height leaves tall RAW frames vulnerable to a transformed
+    // intrinsic size being clipped on narrow/mobile stages.
+    const cssWidth = Math.max(1, Math.floor(canvas.width * fitScale));
+    const cssHeight = Math.max(1, Math.floor(canvas.height * fitScale));
+    canvas.style.width = `${cssWidth}px`;
+    canvas.style.height = `${cssHeight}px`;
+    if (compareCanvas && compareCanvas.width && compareCanvas.height) {
+      const compareScale = Math.min(1, availableWidth / compareCanvas.width, availableHeight / compareCanvas.height);
+      compareCanvas.style.width = `${Math.max(1, Math.floor(compareCanvas.width * compareScale))}px`;
+      compareCanvas.style.height = `${Math.max(1, Math.floor(compareCanvas.height * compareScale))}px`;
+    }
+  }
+
   function updateHistogram(source) {
     if (!source || !histogramBars.length || !source.width || !source.height) return;
     try {
@@ -1395,6 +1417,7 @@
         }
         canvas.style.transform = `scale(${state.zoom})`;
         compareCanvas?.style.setProperty("transform", `scale(${state.zoom})`);
+        fitCanvasToStage();
         canvas.style.border = "0";
         canvas.style.padding = "0";
         lastCanvasSize = { width: canvas.width, height: canvas.height };
