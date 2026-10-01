@@ -115,23 +115,48 @@
   let cropPointer = null;
   let lastCanvasSize = { width: 0, height: 0 };
   const lutConfig = window.FILM_LUT_CONFIG || null;
-  const lutState = { buffer: null, size: lutConfig?.size || 32, count: lutConfig?.count || 0, ready: false, error: null };
+  const lutState = {
+    buffer: null,
+    renderedBuffer: null,
+    size: lutConfig?.size || 32,
+    count: lutConfig?.count || 0,
+    ready: false,
+    error: null,
+  };
   const filmPreviewSources = new Map();
   let filmPreviewToken = 0;
-  const lutReady = fetch("film-luts.bin")
-    .then((response) => {
-      if (!response.ok) throw new Error(`LUT asset ${response.status}`);
-      return response.arrayBuffer();
-    })
-    .then((buffer) => {
+  const LUT_ASSET_VERSION = "20261001-dark-safe-rendered";
+  function parseLutAsset(buffer, assetName) {
       const view = new DataView(buffer);
       const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
       const size = view.getUint32(8, true);
       const count = view.getUint32(12, true);
       if (magic !== "FWLUT32\0" || size !== lutState.size || count !== filmPresets.length) {
-        throw new Error("LUT asset header mismatch");
+        throw new Error(`${assetName} header mismatch`);
       }
+      return buffer;
+  }
+  const lutReady = fetch(`film-luts.bin?v=${LUT_ASSET_VERSION}`)
+    .then((response) => {
+      if (!response.ok) throw new Error(`LUT asset ${response.status}`);
+      return response.arrayBuffer();
+    })
+    .then(async (buffer) => {
+      parseLutAsset(buffer, "RAW LUT asset");
       lutState.buffer = buffer;
+      // Rendered-input LUTs were added for Adobe RGB JPEG/PNG/TIFF imports.
+      // Keep the RAW bank as a backwards-compatible fallback if an older
+      // static deployment has not copied the companion asset yet.
+      try {
+        const renderedResponse = await fetch(`film-luts-rendered.bin?v=${LUT_ASSET_VERSION}`);
+        if (renderedResponse.ok) {
+          const renderedBuffer = await renderedResponse.arrayBuffer();
+          lutState.renderedBuffer = parseLutAsset(renderedBuffer, "Rendered LUT asset");
+        }
+      } catch {
+        // The RAW bank remains usable when the optional companion is absent.
+      }
+      if (!lutState.renderedBuffer) lutState.renderedBuffer = buffer;
       lutState.size = size;
       lutState.count = count;
       lutState.ready = true;
@@ -500,14 +525,16 @@
     if (!lutState.ready || !lutState.buffer) return null;
     const profile = filmPresets.find((item) => item.id === state.selectedFilm) || filmPresets[0];
     if (!profile) return null;
+    const buffer = state.rawImage ? lutState.buffer : (lutState.renderedBuffer || lutState.buffer);
     const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
-    return new Uint16Array(lutState.buffer, offset, lutState.size ** 3 * 3);
+    return new Uint16Array(buffer, offset, lutState.size ** 3 * 3);
   }
 
   function getFilmLut(profile) {
     if (!lutState.ready || !lutState.buffer || !profile) return null;
+    const buffer = state.rawImage ? lutState.buffer : (lutState.renderedBuffer || lutState.buffer);
     const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
-    return new Uint16Array(lutState.buffer, offset, lutState.size ** 3 * 3);
+    return new Uint16Array(buffer, offset, lutState.size ** 3 * 3);
   }
 
   function applyPrimaryLut(source, amount = 1, values = null, lutOverride = null) {
@@ -1411,18 +1438,127 @@
     render();
   }
 
+  function classifyEmbeddedProfile(bytes) {
+    if (!bytes || !bytes.length) return null;
+    // ICC profile descriptions are ASCII/UTF-16 payloads.  latin1 keeps the
+    // byte-to-character mapping stable and avoids UTF-8 replacement glyphs
+    // hiding a description in an otherwise binary image header.
+    const text = new TextDecoder("latin1").decode(bytes);
+    if (/Adobe\s*RGB\s*\(1998\)|Adobe\s*RGB/i.test(text)) return "adobe-rgb";
+    if (/Display\s*P3|DisplayP3|P3\s*D65/i.test(text)) return "display-p3";
+    if (/ProPhoto|ROMM\s*RGB|ROMM_RGB/i.test(text)) return "prophoto-rgb";
+    if (/Rec\.?\s*2020|BT\.?\s*2020|ITU[-_ ]R\s*BT\.2020/i.test(text)) return "rec2020";
+    return null;
+  }
+
+  function jpegIccProfile(bytes) {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+    const chunks = [];
+    let offset = 2;
+    while (offset + 4 <= bytes.length) {
+      if (bytes[offset] !== 0xff) { offset += 1; continue; }
+      while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+      if (offset >= bytes.length) break;
+      const marker = bytes[offset++];
+      if (marker === 0xda || marker === 0xd9) break; // image data follows
+      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+      if (offset + 2 > bytes.length) break;
+      const length = (bytes[offset] << 8) | bytes[offset + 1];
+      if (length < 2 || offset + length > bytes.length) break;
+      if (marker === 0xe2) {
+        const payloadStart = offset + 2;
+        const payloadEnd = offset + length;
+        const signature = "ICC_PROFILE\0";
+        let matches = true;
+        for (let index = 0; index < signature.length; index += 1) {
+          if (bytes[payloadStart + index] !== signature.charCodeAt(index)) { matches = false; break; }
+        }
+        if (matches && payloadStart + 14 <= payloadEnd) {
+          chunks.push({ sequence: bytes[payloadStart + 12], total: bytes[payloadStart + 13], data: bytes.slice(payloadStart + 14, payloadEnd) });
+        }
+      }
+      offset += length;
+    }
+    if (!chunks.length) return null;
+    chunks.sort((a, b) => a.sequence - b.sequence);
+    const total = chunks[0].total;
+    if (!total || chunks.length < total) return null;
+    const profile = [];
+    for (let sequence = 1; sequence <= total; sequence += 1) {
+      const chunk = chunks.find((item) => item.sequence === sequence);
+      if (!chunk) return null;
+      profile.push(chunk.data);
+    }
+    const length = profile.reduce((sum, chunk) => sum + chunk.length, 0);
+    const output = new Uint8Array(length);
+    let cursor = 0;
+    profile.forEach((chunk) => { output.set(chunk, cursor); cursor += chunk.length; });
+    return output;
+  }
+
+  function pngIccProfileName(bytes) {
+    const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    if (bytes.length < 33 || !signature.every((value, index) => bytes[index] === value)) return null;
+    let offset = 8;
+    while (offset + 12 <= bytes.length) {
+      const length = (((bytes[offset] << 24) >>> 0) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+      const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+      const start = offset + 8;
+      const end = start + length;
+      if (end + 4 > bytes.length) break;
+      if (type === "iCCP") {
+        const zero = bytes.indexOf(0, start);
+        if (zero > start) return bytes.slice(start, zero);
+      }
+      offset = end + 4;
+      if (type === "IEND") break;
+    }
+    return null;
+  }
+
+  function tiffIccProfile(bytes) {
+    if (bytes.length < 16) return null;
+    const little = bytes[0] === 0x49 && bytes[1] === 0x49;
+    const big = bytes[0] === 0x4d && bytes[1] === 0x4d;
+    if (!little && !big) return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const u16 = (offset) => view.getUint16(offset, little);
+    const u32 = (offset) => view.getUint32(offset, little);
+    if (u16(2) !== 42) return null;
+    const ifd = u32(4);
+    if (ifd + 2 > bytes.length) return null;
+    const count = u16(ifd);
+    const typeSize = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8 };
+    for (let index = 0; index < count; index += 1) {
+      const entry = ifd + 2 + index * 12;
+      if (entry + 12 > bytes.length) break;
+      const tag = u16(entry);
+      if (tag !== 34675) continue; // InterColorProfile
+      const type = u16(entry + 2);
+      const itemSize = typeSize[type];
+      const itemCount = u32(entry + 4);
+      if (!itemSize || !itemCount || itemCount > bytes.length) return null;
+      const length = itemSize * itemCount;
+      const start = length <= 4 ? entry + 8 : u32(entry + 8);
+      if (start < 0 || start + length > bytes.length) return null;
+      return bytes.slice(start, start + length);
+    }
+    return null;
+  }
+
+  function detectInputColorSpaceFromBytes(bytes) {
+    const profile = jpegIccProfile(bytes) || tiffIccProfile(bytes) || pngIccProfileName(bytes);
+    return classifyEmbeddedProfile(profile || bytes) || "srgb";
+  }
+
   async function detectInputColorSpace(file) {
     try {
-      // ICC descriptions are ASCII tag payloads inside JPEG/TIFF/PNG files.
-      // Read a bounded prefix so a large RAW is never copied just to identify
-      // its embedded preview.  The fallback is sRGB, matching browser image
-      // decoding when no profile is present.
-      const header = await file.slice(0, 1048576).arrayBuffer();
-      const text = new TextDecoder().decode(header);
-      if (/Adobe RGB\s*\(1998\)/i.test(text) || /Adobe RGB/i.test(text)) return "adobe-rgb";
-      if (/Display\s*P3|DisplayP3|P3\s*D65/i.test(text)) return "display-p3";
-      if (/ProPhoto|ROMM\s*RGB|ROMM_RGB/i.test(text)) return "prophoto-rgb";
-      if (/Rec\.?\s*2020|BT\.?\s*2020|ITU[-_ ]R\s*BT\.2020/i.test(text)) return "rec2020";
+      // ICC data is normally in the JPEG/TIFF/PNG header.  A bounded read
+      // keeps a large photo or RAW preview from being copied just for profile
+      // detection; uncompressed 16-bit TIFFs pass their already-read bytes to
+      // detectInputColorSpaceFromBytes below.
+      const header = new Uint8Array(await file.slice(0, 8 * 1048576).arrayBuffer());
+      return detectInputColorSpaceFromBytes(header);
     } catch { /* use the safe sRGB default */ }
     return "srgb";
   }
@@ -1535,7 +1671,7 @@
       destinationRow += rows;
     }
     if (destinationRow < height) return null;
-    return { width, height, data: output, colorSpace: await detectInputColorSpace(file) };
+    return { width, height, data: output, colorSpace: detectInputColorSpaceFromBytes(bytes) };
   }
 
   function setDeepImage(decoded, file, token) {

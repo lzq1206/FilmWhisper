@@ -14,9 +14,10 @@ FilmWhisper 是一个面向浏览器的胶片模拟编辑器，部署为静态 G
 ### 配置与渲染顺序
 
 - 左侧胶片库完整载入 `ColorChecker Film Looks (3FR Pair Match)` 的 45 个配置名称。
-- 每个配置保留原 XMP 的 32³ RGBTable，压缩解码后以二进制资源按需载入，避免把大段色彩数据暴露在页面文字中。
-- 一次调色严格走 XMP 的色彩域路径：sRGB → D65/D50 → ProPhoto → ACR3 曲线 → 32³ LUT → ProPhoto → sRGB。
-- 对已渲染的 JPG/PNG/TIFF 输入不会重复套用 ACR3；可识别并显式转换 sRGB、Adobe RGB (1998)、Display P3、ProPhoto RGB、Rec.2020 的嵌入描述。RAW 基础域的 ACR3 只属于 RAW 参考路径。
+- 每个配置保留原 XMP 的 32³ RGBTable，压缩解码后以二进制资源按需载入，避免把大段色彩数据暴露在页面文字中。RAW 使用 `film-luts.bin`；已渲染图片使用按同一组 24 色数据拟合的 `film-luts-rendered.bin`，避免把 RAW/ACR3 域和 JPEG/TIFF 输出域混用。
+- RAW 路径严格走 XMP 的色彩域路径：Rec.2020 场景线性 → D65/D50 → ProPhoto → ACR3 曲线 → 32³ LUT → ProPhoto → sRGB。JPG/PNG/TIFF 路径不重复套用 ACR3，而是先依据嵌入 ICC 转到 D50 ProPhoto，再进入已渲染输入 LUT。
+- 可识别并显式转换 sRGB、Adobe RGB (1998)、Display P3、ProPhoto RGB、Rec.2020 的嵌入描述；JPEG 的 ICC 分片、PNG 的 iCCP 名称和 TIFF 的 InterColorProfile 均会检查。Adobe RGB 图片会保留其编码值到显式矩阵转换，避免黄色、蓝色和绿色色块被当成 sRGB 后发生色相偏移。
+- `film-luts-rendered.bin` 的输入侧来自带 Adobe RGB ICC 的 `B9999768.jpg`，目标侧为对应 Display-P3 TIFF；24 个色块按 A06…D06 至 A01…D01 的图像顺序逐块拟合，并将真黑固定为零，避免暗部灰雾。
 - 导入照片后，左侧 45 个胶片卡片会用当前照片的小尺寸像素逐个重新渲染缩略图；没有照片时才使用内置的无文字占位预览，不会显示来源文件名。
 - RAW 通过随站点发布的 LibRaw/WASM 解码器在本地解码，保留 Rec.2020 场景线性 RGB16 到 LUT 输入；TIFF 的未压缩 RGB16 也直接走 `Uint16Array` 管线，压缩 TIFF 才回退到浏览器兼容模式。
 - 输出支持 JPEG、PNG、WebP 和未压缩 RGB TIFF（16 位样本、Little-Endian、PlanarConfiguration=1）。
