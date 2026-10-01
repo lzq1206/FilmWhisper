@@ -134,7 +134,7 @@
       if (magic !== "FWLUT32\0" || size !== lutState.size || count !== filmPresets.length) {
         throw new Error(`${assetName} header mismatch`);
       }
-      return buffer;
+      return { buffer, size, count };
   }
   const lutReady = fetch(`film-luts.bin?v=${LUT_ASSET_VERSION}`)
     .then((response) => {
@@ -142,8 +142,8 @@
       return response.arrayBuffer();
     })
     .then(async (buffer) => {
-      parseLutAsset(buffer, "RAW LUT asset");
-      lutState.buffer = buffer;
+      const rawAsset = parseLutAsset(buffer, "RAW LUT asset");
+      lutState.buffer = rawAsset.buffer;
       // Rendered-input LUTs were added for Adobe RGB JPEG/PNG/TIFF imports.
       // Keep the RAW bank as a backwards-compatible fallback if an older
       // static deployment has not copied the companion asset yet.
@@ -151,14 +151,14 @@
         const renderedResponse = await fetch(`film-luts-rendered.bin?v=${LUT_ASSET_VERSION}`);
         if (renderedResponse.ok) {
           const renderedBuffer = await renderedResponse.arrayBuffer();
-          lutState.renderedBuffer = parseLutAsset(renderedBuffer, "Rendered LUT asset");
+          lutState.renderedBuffer = parseLutAsset(renderedBuffer, "Rendered LUT asset").buffer;
         }
       } catch {
         // The RAW bank remains usable when the optional companion is absent.
       }
       if (!lutState.renderedBuffer) lutState.renderedBuffer = buffer;
-      lutState.size = size;
-      lutState.count = count;
+      lutState.size = rawAsset.size;
+      lutState.count = rawAsset.count;
       lutState.ready = true;
       if (state.imageLoaded) render();
       return buffer;
@@ -166,6 +166,8 @@
     .catch((error) => {
       lutState.error = error;
       showToast("主配置资源暂时不可用");
+      console.error("Film LUT asset load failed", error);
+      if (!state.imageLoaded) renderStatus.textContent = `配置资源失败 · ${error?.message || error}`;
       return null;
     });
 
