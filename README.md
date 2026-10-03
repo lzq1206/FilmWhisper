@@ -14,10 +14,11 @@ FilmWhisper 是一个面向浏览器的胶片模拟编辑器，部署为静态 G
 ### 配置与渲染顺序
 
 - 左侧胶片库完整载入 `ColorChecker Film Looks (3FR Pair Match)` 的 45 个配置名称。
-- 当前 45 个胶片使用 ACR 实际渲染核验后的实测修正版。`film-luts.bin` 逐节点保留原 XMP 的 32³ RGBTable；`film-luts-raw.bin` 与 `film-luts-rendered.bin` 将浏览器输入到 ACR 基准的转换与该 LUT 合成，再用同一组实测 24 色块约束量化网格。页面不显示校准来源或实现信息。
-- RAW 路径：Rec.2020 场景线性 × 解码器的曝光倍率 → D65/D50 → ProPhoto → ACR3 曲线 → RAW 输入合成 LUT → ProPhoto → sRGB。解码器的 `sceneScale` 是浮点倍率，不能再除以 65535。JPG/PNG/TIFF 先依据嵌入 ICC 转到 D50 ProPhoto，再进入已渲染输入合成 LUT，不重复套用 ACR3。
+- 当前 45 个胶片同步为用户确认的绿色过渡平滑修正版（Smooth Green）。`film-luts.bin` 逐节点保留本版 XMP 的 32³ RGBTable；`film-input-adapters.bin` 保留已渲染/RAW 两种共享输入适配。运行时分两次查表，先进入 ACR 输入域，再查原 XMP，不再压成一张 32³ 网格，也不在胶片映射上追加色块局部残差场，避免抵消绿色平滑修正。旧合成查表文件仅作为兼容文件保留，不参与渲染。38 款使用通过渐变验证的局部绿色修正，7 款保留原映射。页面不显示校准来源或实现信息。
+- RAW 路径：Rec.2020 场景线性 × 解码器的曝光倍率 → D65/D50 → ProPhoto → ACR3 曲线 → RAW 输入适配 → 原 XMP LUT → ProPhoto → sRGB。解码器的 `sceneScale` 是浮点倍率，不能再除以 65535。JPG/PNG/TIFF 先依据嵌入 ICC 转到 D50 ProPhoto，再经过已渲染输入适配及原 XMP LUT，不重复套用 ACR3。两次查表之间保持浮点精度，16 位输入只在最终输出时量化。
 - 可识别并显式转换 sRGB、Adobe RGB (1998)、Display P3、ProPhoto RGB、Rec.2020 的嵌入描述；JPEG 的 ICC 分片、PNG 的 iCCP 名称和 TIFF 的 InterColorProfile 均会检查。Adobe RGB 图片会保留其编码值到显式矩阵转换，避免黄色、蓝色和绿色色块被当成 sRGB 后发生色相偏移。
-- 输入适配来自同一色卡的浏览器 LibRaw 解码、Adobe RGB JPEG 与实际 ACR 16 位 ProPhoto 基准。45 份目标 TIFF 的色块数据经 ICC 转换后用于约束；没有额外硬归零或 50% 黑点抬升规则。校准精度只覆盖这组实测照片与设置，不能保证其他相机/光源或空间处理逐像素一致。资源版本为 `20261001-acr-measured`，主线程和 Worker 使用相同版本。
+- 输入适配来自同一色卡的浏览器 LibRaw 解码、Adobe RGB JPEG 与实际 ACR 16 位 ProPhoto 基准。绿色修正采用有界候选与连续色相/色度混合，保留 XMP 的中性色、零输入点与无关色相；本版 XMP 实际 ACR 24 色平均 ΔE76 为 0.0514，最大为 2.3587（相对原目标 TIFF）。没有额外硬归零或 50% 黑点抬升规则。校准精度只覆盖这组实测照片与设置，不能保证其他相机/光源或空间处理逐像素一致。LUT 资源版本为 `20261003-smooth-green`，主线程和 Worker 读取相同 LUT。未更新小红书版本。
+- 序列化后的双查表管线针对同一组 24 色块，与本版实际 ACR 导出相比：JPEG 平均 ΔE76 0.0846、最大 0.8439；RAW 平均 0.0846、最大 0.8448。该统计为 ProPhoto 域输入采样的数值核验，不包含最终 sRGB 裁切及空间处理，也不是全图完全一致的承诺。
 - 导入照片后，左侧 45 个胶片卡片会用当前照片的小尺寸像素逐个重新渲染缩略图；没有照片时才使用内置的无文字占位预览，不会显示来源文件名。
 - RAW 通过随站点发布的 LibRaw/WASM 解码器在本地解码，保留 Rec.2020 场景线性 RGB16 到 LUT 输入；TIFF 的未压缩 RGB16 也直接走 `Uint16Array` 管线，压缩 TIFF 才回退到浏览器兼容模式。
 - 输出支持 JPEG、PNG、WebP 和未压缩 RGB TIFF（16 位样本、Little-Endian、PlanarConfiguration=1）。

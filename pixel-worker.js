@@ -296,7 +296,12 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
   return FilmCurves.apply(output, values.curves);
 }
 
-function renderChunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3) {
+function sampleFilmTransform(lut, adapter, encoded) {
+  const acrEncoded = adapter ? samplePrimaryLut(adapter, ...encoded) : encoded;
+  return samplePrimaryLut(lut, ...acrEncoded);
+}
+
+function renderChunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3, adapter) {
   const lut = new Uint16Array(lutBuffer);
   const output = new Uint8ClampedArray(source);
   const matrices = workerState.matrices;
@@ -312,7 +317,7 @@ function renderChunk(source, lutBuffer, amount, width, height, fullHeight, start
     const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
     const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
     const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
-    const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+    const mappedPro = sampleFilmTransform(lut, adapter, proEncoded);
     const mappedProLinear = mappedPro.map(prophotoDecode);
     const mappedXyzD50 = matrixVector(matrices.prophotoToXyz, mappedProLinear);
     const mappedXyzD65 = matrixVector(matrices.d50ToD65, mappedXyzD50);
@@ -328,7 +333,7 @@ function renderChunk(source, lutBuffer, amount, width, height, fullHeight, start
 // LibRaw emits camera-corrected scene-linear Rec.2020 samples as uint16.  Keep
 // those samples at 16-bit through the gamut conversion and LUT lookup; only the
 // final display/export representation is quantised at the very end.
-function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, applyAcr3, outputType) {
+function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, applyAcr3, outputType, adapter) {
   const lut = new Uint16Array(lutBuffer);
   const matrices = workerState.matrices;
   const output = outputType === "rgba16"
@@ -346,7 +351,7 @@ function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, 
     const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
     const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
     const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
-    const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+    const mappedPro = sampleFilmTransform(lut, adapter, proEncoded);
     const mappedXyzD50 = matrixVector(matrices.prophotoToXyz, mappedPro.map(prophotoDecode));
     const mappedXyzD65 = matrixVector(matrices.d50ToD65, mappedXyzD50);
     const mappedLinearSrgb = matrixVector(matrices.xyzToSrgb, mappedXyzD65).map(clamp01);
@@ -376,7 +381,7 @@ function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, 
   return FilmCurves.apply(output, values.curves);
 }
 
-function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3, outputType) {
+function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3, outputType, adapter) {
   const lut = new Uint16Array(lutBuffer);
   const matrices = workerState.matrices;
   const input = inputSettings(colorSpace);
@@ -396,7 +401,7 @@ function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight,
     const xyzD50 = matrixVector(matrices.d65ToD50, xyzD65);
     const proLinear = matrixVector(matrices.xyzToProphoto, xyzD50);
     const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
-    const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+    const mappedPro = sampleFilmTransform(lut, adapter, proEncoded);
     const mappedXyzD65 = matrixVector(matrices.d50ToD65, matrixVector(matrices.prophotoToXyz, mappedPro.map(prophotoDecode)));
     const mapped = matrixVector(matrices.xyzToSrgb, mappedXyzD65).map(clamp01).map(srgbEncode);
     const base = matrixVector(matrices.xyzToSrgb, xyzD65).map(clamp01).map(srgbEncode);
@@ -421,11 +426,12 @@ self.onmessage = (event) => {
   }
   if (message.type !== "render") return;
   try {
+    const adapter = message.adapterBuffer ? new Uint16Array(message.adapterBuffer) : null;
     const result = message.sourceType === "raw16"
-      ? renderRaw16Chunk(new Uint16Array(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.applyAcr3, message.outputType || "rgba8")
+      ? renderRaw16Chunk(new Uint16Array(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.applyAcr3, message.outputType || "rgba8", adapter)
       : message.sourceType === "rgba16"
-        ? renderRgba16Chunk(new Uint16Array(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3, message.outputType || "rgba8")
-      : renderChunk(new Uint8ClampedArray(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3);
+        ? renderRgba16Chunk(new Uint16Array(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3, message.outputType || "rgba8", adapter)
+      : renderChunk(new Uint8ClampedArray(message.buffer), message.lutBuffer, message.amount, message.width, message.height, message.fullHeight, message.startRow, message.values, message.colorSpace, message.applyAcr3, adapter);
     self.postMessage({ id: message.id, startRow: message.startRow, buffer: result.buffer }, [result.buffer]);
   } catch (error) {
     self.postMessage({ id: message.id, error: error instanceof Error ? error.message : String(error) });

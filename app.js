@@ -120,8 +120,7 @@
   const lutConfig = window.FILM_LUT_CONFIG || null;
   const lutState = {
     buffer: null,
-    renderedBuffer: null,
-    rawBuffer: null,
+    adapterBuffer: null,
     size: lutConfig?.size || 32,
     count: lutConfig?.count || 0,
     ready: false,
@@ -129,13 +128,13 @@
   };
   const filmPreviewSources = new Map();
   let filmPreviewToken = 0;
-  const LUT_ASSET_VERSION = "20261001-acr-measured";
-  function parseLutAsset(buffer, assetName) {
+  const LUT_ASSET_VERSION = "20261003-smooth-green";
+  function parseLutAsset(buffer, assetName, expectedCount = filmPresets.length) {
       const view = new DataView(buffer);
       const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
       const size = view.getUint32(8, true);
       const count = view.getUint32(12, true);
-      if (magic !== "FWLUT32\0" || size !== lutState.size || count !== filmPresets.length) {
+      if (magic !== "FWLUT32\0" || size !== lutState.size || count !== expectedCount || buffer.byteLength !== 16 + count * size ** 3 * 6) {
         throw new Error(`${assetName} header mismatch`);
       }
       return { buffer, size, count };
@@ -148,14 +147,9 @@
     .then(async (buffer) => {
       const rawAsset = parseLutAsset(buffer, "RAW LUT asset");
       lutState.buffer = rawAsset.buffer;
-      const responses = await Promise.all([
-        fetch(`film-luts-rendered.bin?v=${LUT_ASSET_VERSION}`),
-        fetch(`film-luts-raw.bin?v=${LUT_ASSET_VERSION}`),
-      ]);
-      if (responses.some((response) => !response.ok)) throw new Error("Input LUT asset unavailable");
-      const [renderedBuffer, rawBuffer] = await Promise.all(responses.map((response) => response.arrayBuffer()));
-      lutState.renderedBuffer = parseLutAsset(renderedBuffer, "Rendered LUT asset").buffer;
-      lutState.rawBuffer = parseLutAsset(rawBuffer, "Decoder-input LUT asset").buffer;
+      const adapterResponse = await fetch(`film-input-adapters.bin?v=${LUT_ASSET_VERSION}`);
+      if (!adapterResponse.ok) throw new Error("Input adapter asset unavailable");
+      lutState.adapterBuffer = parseLutAsset(await adapterResponse.arrayBuffer(), "Input adapter asset", 2).buffer;
       lutState.size = rawAsset.size;
       lutState.count = rawAsset.count;
       lutState.ready = true;
@@ -283,7 +277,7 @@
     const filtered = filmPresets.filter((film) => `${film.name} ${film.meta}`.toLowerCase().includes(query));
     filmGrid.innerHTML = filtered.map((film) => {
       const saved = state.savedFilms.includes(film.id);
-      const preview = filmPreviewSources.get(film.id) || `film-previews/${film.id}.jpg`;
+      const preview = filmPreviewSources.get(film.id) || `film-previews/${film.id}.jpg?v=${LUT_ASSET_VERSION}`;
       return `
       <button class="film-card ${state.selectedFilm === film.id ? "active" : ""}" data-film="${film.id}" style="--swatch:${film.swatch}" aria-label="选择 ${film.name}">
         <span class="film-card-preview" aria-hidden="true"><img src="${preview}" alt="" loading="lazy" decoding="async"></span>
@@ -311,7 +305,7 @@
     }
     savedList.innerHTML = state.savedFilms.map((id) => {
       const film = filmPresets.find((item) => item.id === id);
-      const preview = filmPreviewSources.get(id) || `film-previews/${id}.jpg`;
+      const preview = filmPreviewSources.get(id) || `film-previews/${id}.jpg?v=${LUT_ASSET_VERSION}`;
       return `<button class="saved-item" data-saved-film="${id}">
         <span class="saved-item-preview" aria-hidden="true"><img src="${preview}" alt="" loading="lazy" decoding="async"></span>
         <span class="saved-item-copy"><strong>${film?.name || id}</strong><span>${film?.meta || "色彩配置"}</span></span>
@@ -530,20 +524,32 @@
     if (!lutState.ready || !lutState.buffer) return null;
     const profile = filmPresets.find((item) => item.id === state.selectedFilm) || filmPresets[0];
     if (!profile) return null;
-    const buffer = state.rawImage ? lutState.rawBuffer : lutState.renderedBuffer;
+    const buffer = lutState.buffer;
     const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
     return new Uint16Array(buffer, offset, lutState.size ** 3 * 3);
   }
 
   function getFilmLut(profile) {
     if (!lutState.ready || !lutState.buffer || !profile) return null;
-    const buffer = state.rawImage ? lutState.rawBuffer : lutState.renderedBuffer;
+    const buffer = lutState.buffer;
     const offset = lutConfig.headerBytes + profile.index * lutConfig.voxelBytes;
     return new Uint16Array(buffer, offset, lutState.size ** 3 * 3);
   }
 
+  function getInputAdapter(isRaw = Boolean(state.rawImage)) {
+    if (!lutState.adapterBuffer) return null;
+    // 0 = rendered input, 1 = LibRaw input. Both lead to the ACR baseline.
+    return new Uint16Array(lutState.adapterBuffer, 16 + (isRaw ? 1 : 0) * lutConfig.voxelBytes, lutState.size ** 3 * 3);
+  }
+
+  function sampleFilmTransform(lut, adapter, encoded) {
+    const acrEncoded = adapter ? samplePrimaryLut(adapter, ...encoded) : encoded;
+    return samplePrimaryLut(lut, ...acrEncoded);
+  }
+
   function applyPrimaryLut(source, amount = 1, values = null, lutOverride = null) {
     const lut = lutOverride || getPrimaryLut();
+    const adapter = getInputAdapter(false);
     if (!lut || !colorMatrices.srgbToXyz) return new Uint8ClampedArray(source);
     const input = inputColorSettings(values);
     const output = new Uint8ClampedArray(source);
@@ -557,7 +563,7 @@
       const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
       const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
       const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(input.applyAcr3 ? acr3Forward(value) : value)));
-      const mappedPro = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+      const mappedPro = sampleFilmTransform(lut, adapter, proEncoded);
       const mappedProLinear = mappedPro.map(prophotoDecode);
       const mappedXyzD50 = matrixVector(colorMatrices.prophotoToXyz, mappedProLinear);
       const mappedXyzD65 = matrixVector(colorMatrices.d50ToD65, mappedXyzD50);
@@ -572,6 +578,7 @@
 
   function applyRaw16Lut(source, width, height, amount = 1, values = null, outputType = "rgba8", lutOverride = null) {
     const lut = lutOverride || getPrimaryLut();
+    const adapter = getInputAdapter(true);
     const Output = outputType === "rgba16" ? Uint16Array : Uint8ClampedArray;
     const output = new Output(width * height * 4);
     if (!lut || !colorMatrices.srgbToXyz) return output;
@@ -590,7 +597,7 @@
       const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
       const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
       const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(applyAcr3 ? acr3Forward(value) : value)));
-      const mapped = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+      const mapped = sampleFilmTransform(lut, adapter, proEncoded);
       const mappedXyzD65 = matrixVector(colorMatrices.d50ToD65, matrixVector(colorMatrices.prophotoToXyz, mapped.map(prophotoDecode)));
       const mappedRgb = matrixVector(colorMatrices.xyzToSrgb, mappedXyzD65).map(clamp01).map(srgbEncode);
       const baseRgb = matrixVector(colorMatrices.xyzToSrgb, xyzD65).map(clamp01).map(srgbEncode);
@@ -605,6 +612,7 @@
 
   function applyRgba16Lut(source, width, height, amount = 1, values = null, outputType = "rgba8", lutOverride = null) {
     const lut = lutOverride || getPrimaryLut();
+    const adapter = getInputAdapter(false);
     const Output = outputType === "rgba16" ? Uint16Array : Uint8ClampedArray;
     const output = new Output(width * height * 4);
     if (!lut || !colorMatrices.srgbToXyz) return output;
@@ -621,7 +629,7 @@
       const xyzD50 = matrixVector(colorMatrices.d65ToD50, xyzD65);
       const proLinear = matrixVector(colorMatrices.xyzToProphoto, xyzD50);
       const proEncoded = proLinear.map((value) => clamp01(prophotoEncode(input.applyAcr3 ? acr3Forward(value) : value)));
-      const mapped = samplePrimaryLut(lut, proEncoded[0], proEncoded[1], proEncoded[2]);
+      const mapped = sampleFilmTransform(lut, adapter, proEncoded);
       const mappedXyzD65 = matrixVector(colorMatrices.d50ToD65, matrixVector(colorMatrices.prophotoToXyz, mapped.map(prophotoDecode)));
       const mappedRgb = matrixVector(colorMatrices.xyzToSrgb, mappedXyzD65).map(clamp01).map(srgbEncode);
       const baseRgb = matrixVector(colorMatrices.xyzToSrgb, xyzD65).map(clamp01).map(srgbEncode);
@@ -670,7 +678,7 @@
         acr3Inverse,
       };
       for (let index = 0; index < workerCount(); index += 1) {
-        const worker = new Worker("pixel-worker.js?v=20261001-curves");
+        const worker = new Worker("pixel-worker.js?v=20261003-smooth-green");
         worker.addEventListener("message", (event) => {
           const message = event.data || {};
           if (!message.id) return;
@@ -736,6 +744,8 @@
       const end = endRow * width * channels;
       const chunk = source.slice(start, end);
       const lutBuffer = lut.buffer.slice(lut.byteOffset, lut.byteOffset + lut.byteLength);
+      const adapter = getInputAdapter(sourceType === "raw16");
+      const adapterBuffer = adapter.buffer.slice(adapter.byteOffset, adapter.byteOffset + adapter.byteLength);
       const id = lutWorkerPool.nextId++;
       const worker = pool.workers[workerIndex % pool.workers.length];
       jobs.push(new Promise((resolve, reject) => {
@@ -755,7 +765,8 @@
           outputType,
           buffer: chunk.buffer,
           lutBuffer,
-        }, [chunk.buffer, lutBuffer]);
+          adapterBuffer,
+        }, [chunk.buffer, lutBuffer, adapterBuffer]);
       }));
     }
     return Promise.all(jobs).then((chunks) => {
