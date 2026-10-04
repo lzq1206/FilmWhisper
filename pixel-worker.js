@@ -180,7 +180,7 @@ function hashNoise(x, y, seed) {
 function processSecondary(source, width, height, values = {}, startRow = 0, fullHeight = height) {
   const secondaryFields = [
     "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
-    "saturation", "vibrance", "grain", "bleach", "age", "halation", "halationReturn", "haloHue", "vignette", "distortion",
+    "saturation", "vibrance", "grain", "bleach", "age", "vignette",
     "push", "screenExposure", "printerPreflash",
   ];
   const hasSecondaryWork = values.filter !== "无"
@@ -194,13 +194,12 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
 
   const output = new Uint8ClampedArray(source);
   const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
-  const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0)
-    + (values.negativeViewing === "Auto Levels" ? 0.08 : 0));
+  const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0));
   const contrast = (1 + (Number(values.contrast) || 0) / 100)
     * (values.paperGrade === "Hard" ? 1.08 : values.paperGrade === "Soft" ? 0.92 : 1)
-    * (values.enlarger === "Condenser" ? 1.04 : values.enlarger === "Diffuser" ? 0.97 : 1)
-    * (values.negativeViewing === "Graded Print" ? 1.06 : values.negativeViewing === "Auto Levels" ? 0.98 : 1)
-    * (values.outputMedium === "Print" ? 1.04 : values.outputMedium === "Screen" ? 0.98 : 1);
+    * ({ Diffuser: 1, Condenser: 1.04, "Light Box": 1.01, Scanner: 0.96 }[values.enlarger] || 1)
+    * (values.negativeViewing === "Graded Print" ? 1.06 : 1)
+    * ({ Print: 1.04, Screen: 0.98, "Light Box": 1.02, Scanner: 0.96 }[values.outputMedium] || 1);
   const highlight = (Number(values.highlights) || 0) / 100;
   const shadow = (Number(values.shadows) || 0) / 100;
   const temp = (Number(values.temperature) || 0) / 100
@@ -213,9 +212,7 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
   const grainColor = Number(values.grainColor) / 100;
   const age = Number(values.age) / 50;
   const bleach = Number(values.bleach) / 100;
-  const halation = Number(values.halation) / 100;
   const vignette = Number(values.vignette) / 100;
-  const distortion = Number(values.distortion) / 100;
   const filter = values.filter;
   const seed = String(values.selectedFilm || "acros-100").length * 17 + 11;
 
@@ -224,7 +221,9 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       const i = (y * width + x) * 4;
       const original = [source[i] / 255, source[i + 1] / 255, source[i + 2] / 255];
       let [red, green, blue] = original;
+      red = srgbDecode(red); green = srgbDecode(green); blue = srgbDecode(blue);
       red *= exposure; green *= exposure; blue *= exposure;
+      red = srgbEncode(red); green = srgbEncode(green); blue = srgbEncode(blue);
       red = (red - 0.5) * contrast + 0.5;
       green = (green - 0.5) * contrast + 0.5;
       blue = (blue - 0.5) * contrast + 0.5;
@@ -234,8 +233,8 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       red += shadow * shadowMix * 0.18 + highlight * highlightMix * 0.14;
       green += shadow * shadowMix * 0.18 + highlight * highlightMix * 0.14;
       blue += shadow * shadowMix * 0.18 + highlight * highlightMix * 0.14;
-      red += temp * 0.11 - tint * 0.035;
-      green += tint * 0.08;
+      red += temp * 0.11 + tint * 0.035;
+      green -= tint * 0.08;
       blue -= temp * 0.11 - tint * 0.035;
       if (filter === "Warm 1/8" || filter === "Warm 1/4") {
         const strength = filter === "Warm 1/4" ? 0.055 : 0.028;
@@ -249,9 +248,9 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
         red = red * 0.96 + 0.04; green = green * 0.96 + 0.04; blue = blue * 0.96 + 0.04;
       }
 
-      const hsl = rgbToHsl(Math.max(0, red), Math.max(0, green), Math.max(0, blue));
-      const vivid = vib >= 0 ? vib * (1 - hsl[1]) : vib;
-      [red, green, blue] = hslToRgb(hsl[0], Math.max(0, Math.min(1, hsl[1] * sat + vivid)), hsl[2]);
+      const [hue, saturation, lightness] = rgbToHsl(Math.max(0, red), Math.max(0, green), Math.max(0, blue));
+      const vivid = saturation > 0.0001 ? (vib >= 0 ? vib * (1 - saturation) : vib) : 0;
+      [red, green, blue] = hslToRgb(hue, Math.max(0, Math.min(1, saturation * sat + vivid)), lightness);
       const gray = (red + green + blue) / 3;
       red = red * (1 - bleach * 0.52) + gray * bleach * 0.52;
       green = green * (1 - bleach * 0.52) + gray * bleach * 0.52;
@@ -270,23 +269,19 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
       const edge = Math.min(1, Math.sqrt(dx * dx + dy * dy) * 1.45);
       const vignetteFactor = 1 - vignette * edge * edge * 0.65;
       red *= vignetteFactor; green *= vignetteFactor; blue *= vignetteFactor;
-      if (distortion !== 0) {
-        const warp = distortion * edge * edge * 0.045;
-        red += warp * 0.7; green += warp * 0.3; blue -= warp * 0.4;
-      }
-      if (halation > 0 && luminance > 0.64) {
-        const glow = ((luminance - 0.64) / 0.36) * halation * (0.12 + Number(values.halationReturn || 25) / 100 * 0.24) * formatScale;
-        const halo = hslToRgb(Math.max(0, Number(values.haloHue) || 12) / 360, 0.72, 0.52);
-        red += glow * halo[0]; green += glow * halo[1]; blue += glow * halo[2];
-      }
       if (grainAmount > 0) {
         const gx = Math.floor(x / grainSize) * grainSize;
         const gy = Math.floor(globalY / grainSize) * grainSize;
-        const noise = hashNoise(gx, gy, seed);
+        const neutralNoise = hashNoise(gx, gy, seed);
+        const noise = [
+          neutralNoise,
+          neutralNoise * (1 - grainColor) + hashNoise(gx, gy, seed + 17) * grainColor,
+          neutralNoise * (1 - grainColor) + hashNoise(gx, gy, seed + 31) * grainColor,
+        ];
         const strength = grainAmount * formatScale * (0.045 + Number(values.grainSize) / 100 * 0.055);
-        red += noise * strength;
-        green += noise * strength * (0.84 + grainColor * 0.12);
-        blue += noise * strength * (0.72 + grainColor * 0.24);
+        red += noise[0] * strength;
+        green += noise[1] * strength;
+        blue += noise[2] * strength;
       }
       output[i] = Math.max(0, Math.min(255, Math.round(red * 255)));
       output[i + 1] = Math.max(0, Math.min(255, Math.round(green * 255)));

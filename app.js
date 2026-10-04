@@ -6,7 +6,6 @@
   const shell = $("#appShell");
   const stage = $("#canvasStage");
   const canvas = $("#previewCanvas");
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const fileInput = $("#fileInput");
   const emptyState = $("#emptyState");
   const filmGrid = $("#filmGrid");
@@ -26,7 +25,7 @@
   const mobileBottomNav = $("#mobileBottomNav");
   const histogramPaths = $$("#rgbHistogram path");
   const curveEditor = $("#curveEditor");
-  let curveChannel = "master", curvePoint = 0, curveDragging = false, curveTimer = null;
+  let curveChannel = "master", curvePoint = 0, curveDragging = false;
 
   const defaultValues = {
     curves: FilmCurves.identity(),
@@ -112,6 +111,8 @@
   };
 
   let renderToken = 0;
+  let scheduledRenderFrame = 0;
+  let pendingRenderOptions = null;
   let imageLoadToken = 0;
   let toastTimer;
   let compareCanvas = null;
@@ -227,7 +228,7 @@
   }
 
   function formatValue(field, value) {
-    if (field === "exposure") return `${Number(value).toFixed(2)}`;
+    if (field === "exposure" || field === "screenExposure") return `${Number(value).toFixed(2)}`;
     if (field === "straighten") return `${Number(value).toFixed(1)}°`;
     if (["filmFormat", "filter", "frameStyle", "aspect", "outputFormat", "outputMedium"].includes(field)) return value;
     return `${Math.round(Number(value))}`;
@@ -653,6 +654,7 @@
   };
   let activeLutTask = null;
   let queuedLutTask = null;
+  let queuedInteractiveLutTask = null;
 
   function workerCount() {
     const cores = Number(window.navigator.hardwareConcurrency) || 2;
@@ -664,6 +666,28 @@
     lutWorkerPool.workers.forEach((worker) => worker.terminate());
     lutWorkerPool.workers = [];
     lutWorkerPool.pending.forEach(({ reject }) => reject(new Error("LUT worker unavailable")));
+    lutWorkerPool.pending.clear();
+  }
+
+  function createLutAbortError() {
+    const error = new Error("LUT render superseded");
+    error.name = "AbortError";
+    return error;
+  }
+
+  function supersedeLutTask(task) {
+    if (!task) return;
+    if (task.export) task.reject(createLutAbortError());
+    else task.resolve({ data: new Uint8ClampedArray(task.source), secondaryApplied: false });
+  }
+
+  function cancelActiveLutTask() {
+    if (!activeLutTask || activeLutTask.interactive || activeLutTask.export) return;
+    activeLutTask.cancelled = true;
+    const error = createLutAbortError();
+    lutWorkerPool.workers.forEach((worker) => worker.terminate());
+    lutWorkerPool.workers = [];
+    lutWorkerPool.pending.forEach(({ reject }) => reject(error));
     lutWorkerPool.pending.clear();
   }
 
@@ -779,37 +803,142 @@
     });
   }
 
-  function applyPrimaryLutParallel(source, width, height, amount = 1, values = null) {
-    if (!getPrimaryLut() || amount <= 0) return Promise.resolve({ data: new Uint8ClampedArray(source), secondaryApplied: false });
-    const request = { source, width, height, amount, values: workerValues(values), resolve: null, reject: null };
+  function applyPrimaryLutParallel(source, width, height, amount = 1, values = null, options = {}) {
+    const lut = getPrimaryLut();
+    if (!lut || amount <= 0) return Promise.resolve({ data: new Uint8ClampedArray(source), secondaryApplied: false });
+    const request = {
+      source,
+      width,
+      height,
+      amount,
+      lut,
+      values: workerValues(values),
+      interactive: Boolean(options.interactive),
+      export: Boolean(options.fullResolution),
+      resolve: null,
+      reject: null,
+    };
+    if (request.interactive) cancelActiveLutTask();
     const promise = new Promise((resolve, reject) => { request.resolve = resolve; request.reject = reject; });
-    if (queuedLutTask) queuedLutTask.resolve({ data: new Uint8ClampedArray(queuedLutTask.source), secondaryApplied: false });
-    queuedLutTask = request;
+    if (request.export) {
+      supersedeLutTask(queuedLutTask);
+      supersedeLutTask(queuedInteractiveLutTask);
+      queuedInteractiveLutTask = null;
+      queuedLutTask = request;
+    } else if (queuedLutTask?.export) {
+      supersedeLutTask(queuedInteractiveLutTask);
+      queuedInteractiveLutTask = request;
+    } else {
+      supersedeLutTask(queuedLutTask);
+      queuedLutTask = request;
+    }
 
     const drain = async () => {
-      if (activeLutTask || !queuedLutTask) return;
-      activeLutTask = queuedLutTask;
-      queuedLutTask = null;
+      if (activeLutTask) return;
+      const nextTask = queuedLutTask || queuedInteractiveLutTask;
+      if (!nextTask) return;
+      if (queuedLutTask) queuedLutTask = null;
+      else queuedInteractiveLutTask = null;
+      activeLutTask = nextTask;
       try {
-        activeLutTask.resolve(await runLutWorkerChunks(activeLutTask.source, activeLutTask.width, activeLutTask.height, activeLutTask.amount, activeLutTask.values));
+        activeLutTask.resolve(await runLutWorkerChunks(
+          activeLutTask.source,
+          activeLutTask.width,
+          activeLutTask.height,
+          activeLutTask.amount,
+          activeLutTask.values,
+          { lut: activeLutTask.lut },
+        ));
       } catch (error) {
-        // A browser can block workers when the page is opened directly from
-        // disk. Preserve functionality with the exact synchronous fallback.
-        disableLutWorkers();
-        activeLutTask.resolve({ data: applyPrimaryLut(activeLutTask.source, activeLutTask.amount, activeLutTask.values), secondaryApplied: false });
+        if (error?.name === "AbortError") {
+          activeLutTask.reject(error);
+        } else {
+          // A browser can block workers when the page is opened directly from
+          // disk. Preserve functionality with the exact synchronous fallback.
+          disableLutWorkers();
+          activeLutTask.resolve({ data: applyPrimaryLut(activeLutTask.source, activeLutTask.amount, activeLutTask.values, activeLutTask.lut), secondaryApplied: false });
+        }
       } finally {
         activeLutTask = null;
-        if (queuedLutTask) drain();
+        if (queuedLutTask || queuedInteractiveLutTask) drain();
       }
     };
     drain();
     return promise;
   }
 
+  function applyAutoLevelsPixels(source, width, height, values = {}) {
+    if (values.negativeViewing !== "Auto Levels" || !source?.length) return source;
+    const scale = source instanceof Uint16Array ? 65535 : 255;
+    const bins = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+    const pixelCount = Math.max(1, width * height);
+    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+      const index = pixel * 4;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const bin = Math.max(0, Math.min(255, Math.round(source[index + channel] / scale * 255)));
+        bins[channel][bin] += 1;
+      }
+    }
+    const trim = Math.max(1, Math.floor(pixelCount * 0.01));
+    const ranges = bins.map((channel) => {
+      let low = 0;
+      let high = 255;
+      let count = 0;
+      while (low < 255 && count + channel[low] <= trim) { count += channel[low]; low += 1; }
+      count = 0;
+      while (high > 0 && count + channel[high] <= trim) { count += channel[high]; high -= 1; }
+      return [low / 255, high / 255];
+    });
+    const output = new source.constructor(source);
+    for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+      const index = pixel * 4;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const [low, high] = ranges[channel];
+        if (high <= low + 1 / 255) continue;
+        const normalized = source[index + channel] / scale;
+        output[index + channel] = Math.max(0, Math.min(scale, Math.round((normalized - low) / (high - low) * scale)));
+      }
+    }
+    return output;
+  }
+
+  function applyHalationPixels(source, width, height, values = {}) {
+    const halation = Math.max(0, Math.min(100, Number(values.halation) || 0)) / 100;
+    if (!halation || !source?.length) return source;
+    const scale = source instanceof Uint16Array ? 65535 : 255;
+    const sourcePixels = new source.constructor(source);
+    const output = new source.constructor(source);
+    const returnStrength = Number.isFinite(Number(values.halationReturn)) ? Number(values.halationReturn) : 25;
+    const hue = (Number.isFinite(Number(values.haloHue)) ? Number(values.haloHue) : 12) / 360;
+    const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
+    const halo = hslToRgb(Math.max(0, hue), 0.72, 0.52);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        let luminanceTotal = 0;
+        for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+          const sampleY = Math.max(0, Math.min(height - 1, y + offsetY));
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            const sampleX = Math.max(0, Math.min(width - 1, x + offsetX));
+            const sampleIndex = (sampleY * width + sampleX) * 4;
+            luminanceTotal += (sourcePixels[sampleIndex] * 0.2126 + sourcePixels[sampleIndex + 1] * 0.7152 + sourcePixels[sampleIndex + 2] * 0.0722) / scale;
+          }
+        }
+        const luminance = luminanceTotal / 9;
+        if (luminance <= 0.64) continue;
+        const glow = ((luminance - 0.64) / 0.36) * halation * (0.12 + returnStrength / 100 * 0.24) * formatScale;
+        const outputIndex = (y * width + x) * 4;
+        output[outputIndex] = Math.max(0, Math.min(scale, Math.round((sourcePixels[outputIndex] / scale + glow * halo[0]) * scale)));
+        output[outputIndex + 1] = Math.max(0, Math.min(scale, Math.round((sourcePixels[outputIndex + 1] / scale + glow * halo[1]) * scale)));
+        output[outputIndex + 2] = Math.max(0, Math.min(scale, Math.round((sourcePixels[outputIndex + 2] / scale + glow * halo[2]) * scale)));
+      }
+    }
+    return output;
+  }
+
   function processPixels(source, width, height, values) {
     const secondaryFields = [
       "exposure", "contrast", "highlights", "shadows", "temperature", "tint",
-      "saturation", "vibrance", "grain", "bleach", "age", "halation", "halationReturn", "haloHue", "vignette", "distortion",
+      "saturation", "vibrance", "grain", "bleach", "age", "vignette",
       "push", "screenExposure", "printerPreflash",
     ];
     const hasSecondaryWork = values.filter !== "无"
@@ -822,13 +951,12 @@
     if (!hasSecondaryWork) return FilmCurves.apply(source, values.curves);
     const output = new Uint8ClampedArray(source);
     const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
-    const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0)
-      + (values.negativeViewing === "Auto Levels" ? 0.08 : 0));
+    const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0));
     const contrast = (1 + (Number(values.contrast) || 0) / 100)
       * (values.paperGrade === "Hard" ? 1.08 : values.paperGrade === "Soft" ? 0.92 : 1)
-      * (values.enlarger === "Condenser" ? 1.04 : values.enlarger === "Diffuser" ? 0.97 : 1)
-      * (values.negativeViewing === "Graded Print" ? 1.06 : values.negativeViewing === "Auto Levels" ? 0.98 : 1)
-      * (values.outputMedium === "Print" ? 1.04 : values.outputMedium === "Screen" ? 0.98 : 1);
+      * ({ Diffuser: 1, Condenser: 1.04, "Light Box": 1.01, Scanner: 0.96 }[values.enlarger] || 1)
+      * (values.negativeViewing === "Graded Print" ? 1.06 : 1)
+      * ({ Print: 1.04, Screen: 0.98, "Light Box": 1.02, Scanner: 0.96 }[values.outputMedium] || 1);
     const highlight = (Number(values.highlights) || 0) / 100;
     const shadow = (Number(values.shadows) || 0) / 100;
     const temp = ((Number(values.temperature) || 0) / 100)
@@ -841,9 +969,7 @@
     const grainColor = Number(values.grainColor) / 100;
     const age = Number(values.age) / 50;
     const bleach = Number(values.bleach) / 100;
-    const halation = Number(values.halation) / 100;
     const vignette = Number(values.vignette) / 100;
-    const distortion = Number(values.distortion) / 100;
     const filter = values.filter;
     const seed = String(values.selectedFilm || state.selectedFilm).length * 17 + 11;
 
@@ -852,7 +978,9 @@
         const i = (y * width + x) * 4;
         const original = [source[i] / 255, source[i + 1] / 255, source[i + 2] / 255];
         let [r, g, b] = original;
+        r = srgbDecode(r); g = srgbDecode(g); b = srgbDecode(b);
         r *= exposure; g *= exposure; b *= exposure;
+        r = srgbEncode(r); g = srgbEncode(g); b = srgbEncode(b);
         r = (r - 0.5) * contrast + 0.5;
         g = (g - 0.5) * contrast + 0.5;
         b = (b - 0.5) * contrast + 0.5;
@@ -862,8 +990,8 @@
         r += shadow * shadowMix * 0.18 + highlight * highlightMix * 0.14;
         g += shadow * shadowMix * 0.18 + highlight * highlightMix * 0.14;
         b += shadow * shadowMix * 0.18 + highlight * highlightMix * 0.14;
-        r += temp * 0.11 - tint * 0.035;
-        g += tint * 0.08;
+        r += temp * 0.11 + tint * 0.035;
+        g -= tint * 0.08;
         b -= temp * 0.11 - tint * 0.035;
         if (filter === "Warm 1/8" || filter === "Warm 1/4") {
           const strength = filter === "Warm 1/4" ? 0.055 : 0.028;
@@ -878,7 +1006,7 @@
         }
 
         const [h, s, l] = rgbToHsl(Math.max(0, r), Math.max(0, g), Math.max(0, b));
-        const vivid = vib >= 0 ? vib * (1 - s) : vib;
+        const vivid = s > 0.0001 ? (vib >= 0 ? vib * (1 - s) : vib) : 0;
         [r, g, b] = hslToRgb(h, Math.max(0, Math.min(1, s * sat + vivid)), l);
         const gray = (r + g + b) / 3;
         r = r * (1 - bleach * 0.52) + gray * bleach * 0.52;
@@ -897,28 +1025,19 @@
         const edge = Math.min(1, Math.sqrt(dx * dx + dy * dy) * 1.45);
         const vignetteFactor = 1 - vignette * edge * edge * 0.65;
         r *= vignetteFactor; g *= vignetteFactor; b *= vignetteFactor;
-        if (distortion !== 0) {
-          const warp = distortion * edge * edge * 0.045;
-          r += warp * 0.7; g += warp * 0.3; b -= warp * 0.4;
-        }
-
-        if (halation > 0 && lum > 0.64) {
-          const glow = ((lum - 0.64) / 0.36) * halation * (0.12 + Number(values.halationReturn || 25) / 100 * 0.24) * formatScale;
-          const hue = Math.max(0, Number(values.haloHue) || 12) / 360;
-          const halo = hslToRgb(hue, 0.72, 0.52);
-          r += glow * halo[0];
-          g += glow * halo[1];
-          b += glow * halo[2];
-        }
-
         if (grainAmount > 0) {
           const gx = Math.floor(x / grainSize) * grainSize;
           const gy = Math.floor(y / grainSize) * grainSize;
-          const noise = hashNoise(gx, gy, seed);
+          const neutralNoise = hashNoise(gx, gy, seed);
+          const noise = [
+            neutralNoise,
+            neutralNoise * (1 - grainColor) + hashNoise(gx, gy, seed + 17) * grainColor,
+            neutralNoise * (1 - grainColor) + hashNoise(gx, gy, seed + 31) * grainColor,
+          ];
           const strength = grainAmount * formatScale * (0.045 + Number(values.grainSize) / 100 * 0.055);
-          r += noise * strength;
-          g += noise * strength * (0.84 + grainColor * 0.12);
-          b += noise * strength * (0.72 + grainColor * 0.24);
+          r += noise[0] * strength;
+          g += noise[1] * strength;
+          b += noise[2] * strength;
         }
 
         output[i] = Math.max(0, Math.min(255, Math.round(r * 255)));
@@ -945,15 +1064,17 @@
     return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
   }
 
-  function previewSize() {
+  function previewSize(options = {}) {
     const displaySize = fitSize();
     if (!displaySize.width || !displaySize.height) return displaySize;
     const sourceWidth = Number(state.rawImage?.width || state.deepImage?.width || state.image?.naturalWidth || state.image?.width || displaySize.width);
     const sourceHeight = Number(state.rawImage?.height || state.deepImage?.height || state.image?.naturalHeight || state.image?.height || displaySize.height);
     const ratio = sourceWidth > 0 && sourceHeight > 0 ? sourceWidth / sourceHeight : displaySize.width / displaySize.height;
-    const minimumLongEdge = 2000;
-    const maximumLongEdge = 4096;
-    const longEdge = Math.min(maximumLongEdge, Math.max(minimumLongEdge, displaySize.width, displaySize.height));
+    const sourceLongEdge = Math.max(sourceWidth, sourceHeight);
+    const displayLongEdge = Math.max(displaySize.width, displaySize.height);
+    const longEdge = options.interactive
+      ? Math.min(1024, sourceLongEdge, displayLongEdge)
+      : Math.min(4096, Math.max(2000, displayLongEdge));
     if (ratio >= 1) {
       return { width: longEdge, height: Math.max(1, Math.round(longEdge / ratio)) };
     }
@@ -1007,10 +1128,53 @@
     return crop;
   }
 
+  function distortCanvas(source, value) {
+    const amount = Number(value) / 100;
+    if (!Number.isFinite(amount) || Math.abs(amount) < 0.0001) return source;
+    const width = source.width;
+    const height = source.height;
+    const sourcePixels = source.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+    const output = new Uint8ClampedArray(sourcePixels.length);
+    const maxX = Math.max(1, width - 1);
+    const maxY = Math.max(1, height - 1);
+    for (let y = 0; y < height; y += 1) {
+      const ny = y / maxY * 2 - 1;
+      for (let x = 0; x < width; x += 1) {
+        const nx = x / maxX * 2 - 1;
+        const radius = Math.min(1, nx * nx + ny * ny);
+        const scale = 1 + amount * 0.28 * radius;
+        const sampleX = Math.max(0, Math.min(maxX, (nx * scale + 1) * 0.5 * maxX));
+        const sampleY = Math.max(0, Math.min(maxY, (ny * scale + 1) * 0.5 * maxY));
+        const x0 = Math.floor(sampleX);
+        const y0 = Math.floor(sampleY);
+        const x1 = Math.min(width - 1, x0 + 1);
+        const y1 = Math.min(height - 1, y0 + 1);
+        const fx = sampleX - x0;
+        const fy = sampleY - y0;
+        const topLeft = (y0 * width + x0) * 4;
+        const topRight = (y0 * width + x1) * 4;
+        const bottomLeft = (y1 * width + x0) * 4;
+        const bottomRight = (y1 * width + x1) * 4;
+        const outputIndex = (y * width + x) * 4;
+        for (let channel = 0; channel < 4; channel += 1) {
+          const top = sourcePixels[topLeft + channel] * (1 - fx) + sourcePixels[topRight + channel] * fx;
+          const bottom = sourcePixels[bottomLeft + channel] * (1 - fx) + sourcePixels[bottomRight + channel] * fx;
+          output[outputIndex + channel] = Math.round(top * (1 - fy) + bottom * fy);
+        }
+      }
+    }
+    const result = document.createElement("canvas");
+    result.width = width;
+    result.height = height;
+    result.getContext("2d").putImageData(new ImageData(output, width, height), 0, 0);
+    return result;
+  }
+
   function transformCanvas(source, values) {
     // A manually drawn crop is defined in the visible, post-rotation image
     // space.  Preset aspect crops keep the original centered behavior.
     let working = state.cropRect ? source : cropCanvas(source, values.aspect);
+    working = distortCanvas(working, values.distortion);
     const turns = ((state.rotation % 360) + 360) % 360;
     const swap = turns === 90 || turns === 270;
     const output = document.createElement("canvas");
@@ -1241,7 +1405,7 @@
 
   async function makeProcessedCanvas(useBefore = false, options = {}) {
     if (!state.imageLoaded || !state.image) return null;
-    const size = options.fullResolution ? fullResolutionSize() : previewSize();
+    const size = options.fullResolution ? fullResolutionSize() : previewSize(options);
     const sourceCanvas = document.createElement("canvas");
     sourceCanvas.width = size.width; sourceCanvas.height = size.height;
     const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
@@ -1256,18 +1420,18 @@
         { ...values, imageApplyAcr3: state.imageApplyAcr3, rawSceneScale: state.rawImage?.sceneScale || 1 },
         { sourceType: state.rawImage ? "raw16" : "rgba16", outputType: "rgba8" },
       );
-      const data = new ImageData(transformed.data, size.width, size.height);
+      const data = new ImageData(applyHalationPixels(applyAutoLevelsPixels(transformed.data, size.width, size.height, values), size.width, size.height, values), size.width, size.height);
       sourceContext.putImageData(data, 0, 0);
     } else {
       sourceContext.drawImage(state.image, 0, 0, size.width, size.height);
       const data = sourceContext.getImageData(0, 0, size.width, size.height);
       const transformed = useBefore
         ? { data: convertInputToSrgb(data.data), secondaryApplied: false }
-        : await applyPrimaryLutParallel(data.data, size.width, size.height, Number(values.filmAmount) / 100, values);
+        : await applyPrimaryLutParallel(data.data, size.width, size.height, Number(values.filmAmount) / 100, values, options);
       const processed = transformed.secondaryApplied
         ? transformed.data
         : processPixels(transformed.data, size.width, size.height, values);
-      data.data.set(processed);
+      data.data.set(applyHalationPixels(applyAutoLevelsPixels(processed, size.width, size.height, values), size.width, size.height, values));
       sourceContext.putImageData(data, 0, 0);
     }
     const geometry = useBefore && options.matchGeometry
@@ -1358,10 +1522,10 @@
     points[curvePoint]=[x,Math.max(0,Math.min(1,y))];
     state.curves={...state.curves,[curveChannel]:points};
     drawCurveEditor();
-    if (!curveTimer) curveTimer=setTimeout(()=>{curveTimer=null;render();},120);
+    render({ interactive: true });
   }
 
-  function commitCurve() { clearTimeout(curveTimer);curveTimer=null;pushHistory();render(); }
+  function commitCurve() { pushHistory(); render(); }
   function deleteCurvePoint() {
     const p=FilmCurves.points(state.curves?.[curveChannel]);
     if(curvePoint===0 || curvePoint===p.length-1)return;
@@ -1470,7 +1634,7 @@
     };
   }
 
-  function render() {
+  function render(options = {}) {
     if (!state.imageLoaded || !state.image) {
       canvas.classList.remove("ready");
       emptyState.classList.remove("hidden");
@@ -1480,17 +1644,35 @@
     }
     emptyState.classList.add("hidden");
     canvas.classList.add("ready");
-    const token = ++renderToken;
-    renderStatus.textContent = "正在渲染 · 多核处理";
-    window.requestAnimationFrame(async () => {
-      if (token !== renderToken) return;
+    ++renderToken;
+    const interactive = Boolean(options.interactive);
+    pendingRenderOptions = pendingRenderOptions
+      ? { ...pendingRenderOptions, interactive: pendingRenderOptions.interactive && interactive }
+      : { interactive };
+    renderStatus.textContent = interactive ? "正在实时预览 · 多核处理" : "正在渲染 · 多核处理";
+    if (scheduledRenderFrame) return;
+    scheduledRenderFrame = window.requestAnimationFrame(async () => {
+      scheduledRenderFrame = 0;
+      const renderOptions = pendingRenderOptions || { interactive: false };
+      pendingRenderOptions = null;
+      const token = renderToken;
+      const renderInteractive = Boolean(renderOptions.interactive);
+      const beforeMode = state.before;
+      const showCompare = !renderInteractive && state.compare && !beforeMode;
+      const showBefore = beforeMode || showCompare;
+      if (renderInteractive) {
+        compareCanvas?.classList.add("hidden");
+        canvas.classList.remove("compare-active");
+        compareLine.classList.add("hidden");
+      }
       try {
-        const after = await makeProcessedCanvas(false);
-        const showCompare = state.compare && !state.before;
-        const before = state.before || showCompare ? await makeProcessedCanvas(true, { matchGeometry: showCompare }) : null;
+        const after = await makeProcessedCanvas(false, { interactive: renderInteractive });
+        const before = showBefore
+          ? await makeProcessedCanvas(true, { matchGeometry: showCompare, interactive: renderInteractive })
+          : null;
         if (token !== renderToken) return;
-        drawCanvas(canvas, state.before ? before : after);
-        updateHistogram(canvas);
+        drawCanvas(canvas, beforeMode ? before : after);
+        if (!renderInteractive) updateHistogram(canvas);
         if (showCompare) {
           drawCanvas(ensureCompareCanvas(), before);
           compareCanvas.classList.remove("hidden");
@@ -1507,13 +1689,16 @@
         canvas.style.border = "0";
         canvas.style.padding = "0";
         lastCanvasSize = { width: canvas.width, height: canvas.height };
-        renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${state.before ? "原图" : activeFilmLabel.textContent}`;
+        renderStatus.textContent = `${canvas.width} × ${canvas.height} · ${renderInteractive ? "实时预览" : (beforeMode ? "原图" : activeFilmLabel.textContent)}`;
         $$('[data-action="compare"]').forEach((button) => button.setAttribute("aria-pressed", String(showCompare)));
-        $$('[data-action="before"]').forEach((button) => button.setAttribute("aria-pressed", String(state.before)));
+        $$('[data-action="before"]').forEach((button) => button.setAttribute("aria-pressed", String(beforeMode)));
         updateCropOverlay();
       } catch (error) {
-        if (token === renderToken) renderStatus.textContent = "渲染失败 · 请重试";
-        console.error(error);
+        if (error?.name === "AbortError") return;
+        if (token === renderToken) {
+          renderStatus.textContent = "渲染失败 · 请重试";
+          console.error(error);
+        }
       }
     });
   }
@@ -1548,7 +1733,7 @@
     }
     const output = $(`[data-output="${key}"]`);
     if (output) output.textContent = formatValue(key, state[key]);
-    render();
+    render({ interactive: control.type === "range" && !commit });
   }
 
   function classifyEmbeddedProfile(bytes) {
@@ -2151,6 +2336,7 @@
     const position = cropPointerPosition(event);
     state.cropRect = cropRectFromDrag(cropPointer.startX, cropPointer.startY, position.x, position.y);
     updateCropOverlay();
+    render({ interactive: true });
     event.preventDefault();
   });
   const finishCropPointer = (event) => {
