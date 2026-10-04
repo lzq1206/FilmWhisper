@@ -24,7 +24,8 @@ FilmWhisper 是一个面向浏览器的胶片模拟编辑器，部署为静态 G
 - 输出支持 JPEG、PNG、WebP 和未压缩 RGB TIFF（16 位样本、Little-Endian、PlanarConfiguration=1）。
 - 裁剪模式提供主图上的手动拖拽裁剪框；输出模式提供黑色、白色、灰色、宝丽来式和方形五种边框。
 - 右侧面板只作用于 LUT 输出后的二次调色。切换胶片时所有二次调色恢复为中性值，不会把某个胶片的手工曝光、色温、颗粒或晕光偷偷写入右侧。
-- 主 LUT 与右侧二次调色均在 `pixel-worker.js` 的 2–4 个 Worker 中按行分块处理；连续拖动滑块时只保留最新一帧，避免旧渲染任务堆积在主线程。
+- 普通 sRGB 图片在交互拖动时优先使用 WebGL2 3D LUT 预览；WebGL2、复杂效果、RAW/16 位输入或导出会自动回退到 CPU Worker。GPU 只负责交互显示，不参与高清导出。
+- 主 LUT 与 CPU 二次调色均在 `pixel-worker.js` 的 2–4 个 Worker 中按行分块处理；连续拖动滑块时只保留最新一帧。未压缩 16 位 TIFF/RAW 的 TIFF 导出使用 `Uint16Array` 直接编码；8 位图片导出 TIFF 只能是 8 位源的升位，不会恢复额外信息。
 
 
 ### 功能对齐

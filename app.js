@@ -6,6 +6,8 @@
   const shell = $("#appShell");
   const stage = $("#canvasStage");
   const canvas = $("#previewCanvas");
+  let gpuPreviewCanvas = null;
+  let gpuPreview = null;
   const fileInput = $("#fileInput");
   const emptyState = $("#emptyState");
   const filmGrid = $("#filmGrid");
@@ -521,6 +523,61 @@
     });
   }
 
+  function ensureGpuPreview() {
+    if (gpuPreview || !window.FilmGpuPreview || !lutConfig) return gpuPreview;
+    gpuPreviewCanvas = document.createElement("canvas");
+    gpuPreviewCanvas.id = "gpuPreviewCanvas";
+    gpuPreviewCanvas.setAttribute("aria-label", "GPU 实时预览");
+    gpuPreviewCanvas.style.cssText = "display:none; max-width:100%; max-height:100%; border-radius:2px; box-shadow:0 24px 70px #0008; pointer-events:none;";
+    stage.insertBefore(gpuPreviewCanvas, canvas);
+    gpuPreview = window.FilmGpuPreview.create(gpuPreviewCanvas, { size: lutState.size, matrices: colorMatrices });
+    if (!gpuPreview) {
+      gpuPreviewCanvas.remove();
+      gpuPreviewCanvas = null;
+    }
+    return gpuPreview;
+  }
+
+  function hideGpuPreview() {
+    if (!gpuPreviewCanvas) return;
+    gpuPreviewCanvas.style.display = "none";
+    canvas.style.display = "";
+  }
+
+  function gpuPreviewEligible(values, options = {}) {
+    if (!options.interactive || options.fullResolution || !state.image || state.rawImage || state.deepImage) return false;
+    if (state.imageColorSpace !== "srgb" || state.before || state.compare || state.mode !== "develop") return false;
+    if (FilmCurves.changed(values.curves)) return false;
+    if (Number(values.halation) > 0 || Number(values.printerPreflash) > 0 || Number(values.distortion) !== 0 || Number(values.frameSize) > 0 || values.aspect !== "free" || state.cropRect || state.rotation || state.flipH || Math.abs(Number(values.straighten)) > 0.01) return false;
+    if (values.filter !== "无" || values.negativeViewing !== "Reference Exposure" || values.viewingIlluminant !== "D50" || values.paperGrade !== "Reference" || values.enlarger !== "Diffuser" || values.outputMedium !== "Photo") return false;
+    return Boolean(ensureGpuPreview());
+  }
+
+  function tryGpuPreview(values, options = {}) {
+    if (!gpuPreviewEligible(values, options) || !lutState.ready) return false;
+    cancelActiveLutTask();
+    const lut = getPrimaryLut();
+    const adapter = getInputAdapter(false);
+    if (!lut || !adapter || !gpuPreviewCanvas) return false;
+    const size = previewSize({ interactive: true });
+    const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
+    try {
+      if (!gpuPreview.render({ image: state.image, width: size.width, height: size.height, filmLut: lut, adapter, filmKey: state.selectedFilm, values, filmFormatScale: formatScale })) return false;
+    } catch (error) {
+      console.warn("GPU preview fallback", error);
+      gpuPreview?.destroy?.();
+      gpuPreview = null;
+      hideGpuPreview();
+      return false;
+    }
+    canvas.style.display = "none";
+    gpuPreviewCanvas.style.display = "block";
+    gpuPreviewCanvas.style.transform = `scale(${state.zoom})`;
+    fitCanvasToStage(gpuPreviewCanvas);
+    lastCanvasSize = { width: gpuPreviewCanvas.width, height: gpuPreviewCanvas.height };
+    return true;
+  }
+
   function getPrimaryLut() {
     if (!lutState.ready || !lutState.buffer) return null;
     const profile = filmPresets.find((item) => item.id === state.selectedFilm) || filmPresets[0];
@@ -702,7 +759,7 @@
         acr3Inverse,
       };
       for (let index = 0; index < workerCount(); index += 1) {
-        const worker = new Worker("pixel-worker.js?v=20261003-smooth-green");
+        const worker = new Worker("pixel-worker.js?v=20261004-gpu-16bit");
         worker.addEventListener("message", (event) => {
           const message = event.data || {};
           if (!message.id) return;
@@ -748,11 +805,11 @@
     if (!pool || !lut || !colorMatrices.srgbToXyz) {
       if (sourceType === "raw16") {
         const result = applyRaw16Lut(source, width, height, amount, values, outputType, lut);
-        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : FilmCurves.apply(result, values.curves), secondaryApplied: outputType === "rgba8" });
+        return Promise.resolve({ data: processPixels(result, width, height, values), secondaryApplied: true });
       }
       if (sourceType === "rgba16") {
         const result = applyRgba16Lut(source, width, height, amount, values, outputType, lut);
-        return Promise.resolve({ data: outputType === "rgba8" ? processPixels(result, width, height, values) : FilmCurves.apply(result, values.curves), secondaryApplied: outputType === "rgba8" });
+        return Promise.resolve({ data: processPixels(result, width, height, values), secondaryApplied: true });
       }
       return Promise.resolve({ data: applyPrimaryLut(source, amount, values, lut), secondaryApplied: false });
     }
@@ -949,7 +1006,8 @@
       || values.outputMedium !== "Photo"
       || values.viewingIlluminant !== "D50";
     if (!hasSecondaryWork) return FilmCurves.apply(source, values.curves);
-    const output = new Uint8ClampedArray(source);
+    const output = new source.constructor(source);
+    const scale = source instanceof Uint16Array ? 65535 : 255;
     const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
     const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0));
     const contrast = (1 + (Number(values.contrast) || 0) / 100)
@@ -976,7 +1034,7 @@
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
         const i = (y * width + x) * 4;
-        const original = [source[i] / 255, source[i + 1] / 255, source[i + 2] / 255];
+        const original = [source[i] / scale, source[i + 1] / scale, source[i + 2] / scale];
         let [r, g, b] = original;
         r = srgbDecode(r); g = srgbDecode(g); b = srgbDecode(b);
         r *= exposure; g *= exposure; b *= exposure;
@@ -1040,9 +1098,9 @@
           b += noise[2] * strength;
         }
 
-        output[i] = Math.max(0, Math.min(255, Math.round(r * 255)));
-        output[i + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
-        output[i + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
+        output[i] = Math.max(0, Math.min(scale, Math.round(r * scale)));
+        output[i + 1] = Math.max(0, Math.min(scale, Math.round(g * scale)));
+        output[i + 2] = Math.max(0, Math.min(scale, Math.round(b * scale)));
       }
     }
     return FilmCurves.apply(output, values.curves);
@@ -1085,12 +1143,11 @@
   // as the source for an export.  A 120 MP ceiling prevents an accidental
   // browser allocation failure while preserving the native size of ordinary
   // camera files.
-  function fullResolutionSize() {
+  function fullResolutionSize(maxPixels = 120_000_000) {
     if (!state.imageLoaded || !state.image) return { width: 0, height: 0 };
     const rawWidth = Number(state.rawImage?.width || state.deepImage?.width || state.image.naturalWidth || state.image.width);
     const rawHeight = Number(state.rawImage?.height || state.deepImage?.height || state.image.naturalHeight || state.image.height);
     if (!Number.isFinite(rawWidth) || !Number.isFinite(rawHeight) || rawWidth <= 0 || rawHeight <= 0) return fitSize();
-    const maxPixels = 120_000_000;
     const scale = Math.min(1, Math.sqrt(maxPixels / (rawWidth * rawHeight)));
     return {
       width: Math.max(1, Math.round(rawWidth * scale)),
@@ -1403,6 +1460,229 @@
     return output;
   }
 
+  function createRgba16Frame(width, height) {
+    return { width, height, data: new Uint16Array(width * height * 4) };
+  }
+
+  function sampleRgba16(source, x, y, output, outputIndex) {
+    if (x < 0 || y < 0 || x > source.width - 1 || y > source.height - 1) {
+      output[outputIndex] = 0;
+      output[outputIndex + 1] = 0;
+      output[outputIndex + 2] = 0;
+      output[outputIndex + 3] = 0;
+      return;
+    }
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const x1 = Math.min(source.width - 1, x0 + 1), y1 = Math.min(source.height - 1, y0 + 1);
+    const fx = x - x0, fy = y - y0;
+    const topLeft = (y0 * source.width + x0) * 4;
+    const topRight = (y0 * source.width + x1) * 4;
+    const bottomLeft = (y1 * source.width + x0) * 4;
+    const bottomRight = (y1 * source.width + x1) * 4;
+    for (let channel = 0; channel < 4; channel += 1) {
+      const top = source.data[topLeft + channel] * (1 - fx) + source.data[topRight + channel] * fx;
+      const bottom = source.data[bottomLeft + channel] * (1 - fx) + source.data[bottomRight + channel] * fx;
+      output[outputIndex + channel] = Math.round(top * (1 - fy) + bottom * fy);
+    }
+  }
+
+  function cropRgba16(source, x, y, width, height) {
+    const output = createRgba16Frame(width, height);
+    const startX = Math.max(0, Math.min(source.width - 1, Math.round(x)));
+    const startY = Math.max(0, Math.min(source.height - 1, Math.round(y)));
+    for (let row = 0; row < height; row += 1) {
+      const sourceY = Math.min(source.height - 1, startY + row);
+      for (let column = 0; column < width; column += 1) {
+        const sourceX = Math.min(source.width - 1, startX + column);
+        const sourceIndex = (sourceY * source.width + sourceX) * 4;
+        const outputIndex = (row * width + column) * 4;
+        output.data.set(source.data.subarray(sourceIndex, sourceIndex + 4), outputIndex);
+      }
+    }
+    return output;
+  }
+
+  function cropRgba16Aspect(source, aspect) {
+    if (!aspect || aspect === "free") return source;
+    const ratio = Number(aspect);
+    if (!Number.isFinite(ratio) || ratio <= 0) return source;
+    const current = source.width / source.height;
+    const width = current > ratio ? Math.max(1, Math.round(source.height * ratio)) : source.width;
+    const height = current > ratio ? source.height : Math.max(1, Math.round(source.width / ratio));
+    return cropRgba16(source, (source.width - width) / 2, (source.height - height) / 2, width, height);
+  }
+
+  function rotateRgba16(source, turns, flipH) {
+    const swap = turns === 90 || turns === 270;
+    const output = createRgba16Frame(swap ? source.height : source.width, swap ? source.width : source.height);
+    for (let y = 0; y < output.height; y += 1) {
+      for (let x = 0; x < output.width; x += 1) {
+        let sourceX;
+        let sourceY;
+        if (turns === 90) { sourceX = y; sourceY = source.height - 1 - x; }
+        else if (turns === 180) { sourceX = source.width - 1 - x; sourceY = source.height - 1 - y; }
+        else if (turns === 270) { sourceX = source.width - 1 - y; sourceY = x; }
+        else { sourceX = x; sourceY = y; }
+        if (flipH) sourceX = source.width - 1 - sourceX;
+        const sourceIndex = (sourceY * source.width + sourceX) * 4;
+        const outputIndex = (y * output.width + x) * 4;
+        output.data.set(source.data.subarray(sourceIndex, sourceIndex + 4), outputIndex);
+      }
+    }
+    return output;
+  }
+
+  function rotateRgba16Angle(source, degrees) {
+    if (Math.abs(degrees) <= 0.01) return source;
+    const output = createRgba16Frame(source.width, source.height);
+    const angle = degrees * Math.PI / 180;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const centerX = (source.width - 1) / 2, centerY = (source.height - 1) / 2;
+    for (let y = 0; y < output.height; y += 1) {
+      for (let x = 0; x < output.width; x += 1) {
+        const dx = x - centerX, dy = y - centerY;
+        const sourceX = cos * dx + sin * dy + centerX;
+        const sourceY = -sin * dx + cos * dy + centerY;
+        sampleRgba16(source, sourceX, sourceY, output.data, (y * output.width + x) * 4);
+      }
+    }
+    return output;
+  }
+
+  function distortRgba16(source, value) {
+    const amount = Number(value) / 100;
+    if (!Number.isFinite(amount) || Math.abs(amount) < 0.0001) return source;
+    const output = createRgba16Frame(source.width, source.height);
+    const maxX = Math.max(1, source.width - 1), maxY = Math.max(1, source.height - 1);
+    for (let y = 0; y < output.height; y += 1) {
+      const normalizedY = y / maxY * 2 - 1;
+      for (let x = 0; x < output.width; x += 1) {
+        const normalizedX = x / maxX * 2 - 1;
+        const radius = Math.min(1, normalizedX * normalizedX + normalizedY * normalizedY);
+        const scale = 1 + amount * 0.28 * radius;
+        const sourceX = Math.max(0, Math.min(maxX, (normalizedX * scale + 1) * 0.5 * maxX));
+        const sourceY = Math.max(0, Math.min(maxY, (normalizedY * scale + 1) * 0.5 * maxY));
+        sampleRgba16(source, sourceX, sourceY, output.data, (y * output.width + x) * 4);
+      }
+    }
+    return output;
+  }
+
+  function fillRgba16(frame, red, green, blue) {
+    for (let index = 0; index < frame.data.length; index += 4) {
+      frame.data[index] = red;
+      frame.data[index + 1] = green;
+      frame.data[index + 2] = blue;
+      frame.data[index + 3] = 65535;
+    }
+  }
+
+  function drawRgba16Scaled(destination, source, x, y, width, height) {
+    for (let row = 0; row < height; row += 1) {
+      const sourceY = Math.max(0, Math.min(source.height - 1, (row + 0.5) * source.height / height - 0.5));
+      for (let column = 0; column < width; column += 1) {
+        const sourceX = Math.max(0, Math.min(source.width - 1, (column + 0.5) * source.width / width - 0.5));
+        sampleRgba16(source, sourceX, sourceY, destination.data, ((y + row) * destination.width + x + column) * 4);
+      }
+    }
+  }
+
+  function frameRgba16(source, frameStyle, frameSizeValue) {
+    if (!frameStyle || Number(frameSizeValue) <= 0) return source;
+    const styleMap = { "Black Mount": "black", "White Mount": "white", "Square Post": "square", "Portrait Post": "polaroid", Story: "polaroid" };
+    const style = styleMap[frameStyle] || frameStyle;
+    const border = Math.max(1, Math.round(Math.min(source.width, source.height) * Number(frameSizeValue) / 100 * 0.12));
+    const colors = { black: [0x12, 0x14, 0x17], white: [0xf4, 0xf0, 0xe8], gray: [0x85, 0x87, 0x8a], polaroid: [0xf4, 0xef, 0xe5], square: [0xf4, 0xf0, 0xe8] };
+    const color = colors[style] || colors.black;
+    const background = color.map((value) => value * 257);
+    if (style === "square") {
+      const side = Math.max(source.width, source.height) + border * 2;
+      const output = createRgba16Frame(side, side);
+      fillRgba16(output, background[0], background[1], background[2]);
+      drawRgba16Scaled(output, source, Math.round((side - source.width) / 2), Math.round((side - source.height) / 2), source.width, source.height);
+      return output;
+    }
+    if (style === "polaroid") {
+      const frameRatio = 4 / 5;
+      const minimumWidth = source.width + border * 2;
+      const minimumHeight = source.height + border * 3;
+      let width = Math.max(minimumWidth, Math.ceil(minimumHeight * frameRatio));
+      let height = Math.ceil(width / frameRatio);
+      if (height < minimumHeight) { height = minimumHeight; width = Math.ceil(height * frameRatio); }
+      const output = createRgba16Frame(width, height);
+      fillRgba16(output, background[0], background[1], background[2]);
+      const innerWidth = width - border * 2, innerHeight = height - border * 3;
+      const scale = Math.min(innerWidth / source.width, innerHeight / source.height);
+      const imageWidth = Math.max(1, Math.round(source.width * scale));
+      const imageHeight = Math.max(1, Math.round(source.height * scale));
+      drawRgba16Scaled(output, source, Math.round((width - imageWidth) / 2), border, imageWidth, imageHeight);
+      return output;
+    }
+    const output = createRgba16Frame(source.width + border * 2, source.height + border * 2);
+    fillRgba16(output, background[0], background[1], background[2]);
+    drawRgba16Scaled(output, source, border, border, source.width, source.height);
+    return output;
+  }
+
+  function transformRgba16(source, values) {
+    let working = state.cropRect ? source : cropRgba16Aspect(source, values.aspect);
+    working = distortRgba16(working, values.distortion);
+    const turns = ((state.rotation % 360) + 360) % 360;
+    working = rotateRgba16(working, turns, state.flipH);
+    working = rotateRgba16Angle(working, Number(values.straighten) || 0);
+    if (state.cropRect) {
+      const rect = state.cropRect;
+      const x = Math.max(0, Math.min(0.999, Number(rect.x) || 0));
+      const y = Math.max(0, Math.min(0.999, Number(rect.y) || 0));
+      const width = Math.max(0.01, Math.min(1 - x, Number(rect.width) || 1));
+      const height = Math.max(0.01, Math.min(1 - y, Number(rect.height) || 1));
+      working = cropRgba16(working, Math.round(working.width * x), Math.round(working.height * y), Math.max(1, Math.round(working.width * width)), Math.max(1, Math.round(working.height * height)));
+    }
+    return frameRgba16(working, values.frameStyle, values.frameSize);
+  }
+
+  function rgba16FromCanvas(canvasSource) {
+    const pixels = canvasSource.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, canvasSource.width, canvasSource.height).data;
+    const output = new Uint16Array(pixels.length);
+    for (let index = 0; index < pixels.length; index += 1) output[index] = pixels[index] * 257;
+    return output;
+  }
+
+  async function makeProcessedRgba16() {
+    if (!state.imageLoaded || !state.image) return null;
+    await lutReady;
+    if (!lutState.ready) throw new Error("16 位导出需要 LUT 资源");
+    const size = fullResolutionSize(60_000_000);
+    const values = activeValues(false);
+    let source;
+    let sourceType;
+    if (state.rawImage) {
+      source = downsampleRaw(size);
+      sourceType = "raw16";
+    } else if (state.deepImage) {
+      source = downsampleDeep(size);
+      sourceType = "rgba16";
+    } else {
+      const sourceCanvas = document.createElement("canvas");
+      sourceCanvas.width = size.width;
+      sourceCanvas.height = size.height;
+      sourceCanvas.getContext("2d", { willReadFrequently: true }).drawImage(state.image, 0, 0, size.width, size.height);
+      source = rgba16FromCanvas(sourceCanvas);
+      sourceType = "rgba16";
+    }
+    const rendered = await runLutWorkerChunks(
+      source,
+      size.width,
+      size.height,
+      Number(values.filmAmount) / 100,
+      { ...values, imageApplyAcr3: state.imageApplyAcr3, rawSceneScale: state.rawImage?.sceneScale || 1 },
+      { sourceType, outputType: "rgba16" },
+    );
+    const autoLevels = applyAutoLevelsPixels(rendered.data, size.width, size.height, values);
+    const halation = applyHalationPixels(autoLevels, size.width, size.height, values);
+    return transformRgba16({ width: size.width, height: size.height, data: halation }, values);
+  }
+
   async function makeProcessedCanvas(useBefore = false, options = {}) {
     if (!state.imageLoaded || !state.image) return null;
     const size = options.fullResolution ? fullResolutionSize() : previewSize(options);
@@ -1449,21 +1729,21 @@
     destinationContext.drawImage(source, 0, 0);
   }
 
-  function fitCanvasToStage() {
-    if (!canvas.width || !canvas.height) return;
+  function fitCanvasToStage(target = canvas) {
+    if (!target?.width || !target?.height) return;
     const stageStyle = window.getComputedStyle(stage);
     const horizontalPadding = parseFloat(stageStyle.paddingLeft || 0) + parseFloat(stageStyle.paddingRight || 0);
     const verticalPadding = parseFloat(stageStyle.paddingTop || 0) + parseFloat(stageStyle.paddingBottom || 0);
     const availableWidth = Math.max(1, stage.clientWidth - horizontalPadding);
     const availableHeight = Math.max(1, stage.clientHeight - verticalPadding);
-    const fitScale = Math.min(1, availableWidth / canvas.width, availableHeight / canvas.height);
+    const fitScale = Math.min(1, availableWidth / target.width, availableHeight / target.height);
     // Give the DOM canvas an explicit contained box.  Relying only on
     // max-width/max-height leaves tall RAW frames vulnerable to a transformed
     // intrinsic size being clipped on narrow/mobile stages.
-    const cssWidth = Math.max(1, Math.floor(canvas.width * fitScale));
-    const cssHeight = Math.max(1, Math.floor(canvas.height * fitScale));
-    canvas.style.width = `${cssWidth}px`;
-    canvas.style.height = `${cssHeight}px`;
+    const cssWidth = Math.max(1, Math.floor(target.width * fitScale));
+    const cssHeight = Math.max(1, Math.floor(target.height * fitScale));
+    target.style.width = `${cssWidth}px`;
+    target.style.height = `${cssHeight}px`;
     if (compareCanvas && compareCanvas.width && compareCanvas.height) {
       const compareScale = Math.min(1, availableWidth / compareCanvas.width, availableHeight / compareCanvas.height);
       compareCanvas.style.width = `${Math.max(1, Math.floor(compareCanvas.width * compareScale))}px`;
@@ -1636,6 +1916,7 @@
 
   function render(options = {}) {
     if (!state.imageLoaded || !state.image) {
+      hideGpuPreview();
       canvas.classList.remove("ready");
       emptyState.classList.remove("hidden");
       renderStatus.textContent = "等待图片";
@@ -1646,9 +1927,7 @@
     canvas.classList.add("ready");
     ++renderToken;
     const interactive = Boolean(options.interactive);
-    pendingRenderOptions = pendingRenderOptions
-      ? { ...pendingRenderOptions, interactive: pendingRenderOptions.interactive && interactive }
-      : { interactive };
+    pendingRenderOptions = { interactive };
     renderStatus.textContent = interactive ? "正在实时预览 · 多核处理" : "正在渲染 · 多核处理";
     if (scheduledRenderFrame) return;
     scheduledRenderFrame = window.requestAnimationFrame(async () => {
@@ -1666,6 +1945,17 @@
         compareLine.classList.add("hidden");
       }
       try {
+        if (renderInteractive && !beforeMode && !showCompare) {
+          const gpuValues = activeValues(false);
+          if (tryGpuPreview(gpuValues, renderOptions)) {
+            if (token !== renderToken) return;
+            renderStatus.textContent = `${gpuPreviewCanvas.width} × ${gpuPreviewCanvas.height} · GPU 实时预览`;
+            $$('[data-action="compare"]').forEach((button) => button.setAttribute("aria-pressed", "false"));
+            $$('[data-action="before"]').forEach((button) => button.setAttribute("aria-pressed", "false"));
+            return;
+          }
+        }
+        hideGpuPreview();
         const after = await makeProcessedCanvas(false, { interactive: renderInteractive });
         const before = showBefore
           ? await makeProcessedCanvas(true, { matchGeometry: showCompare, interactive: renderInteractive })
@@ -2112,9 +2402,13 @@
   async function exportImage() {
     if (!state.imageLoaded) return showToast("请先打开一张图片");
     renderStatus.textContent = "正在生成高清导出 · 多核处理";
+    const type = state.outputFormat || "image/jpeg";
+    const quality = Number(state.quality) / 100;
     let source;
     try {
-      source = await makeProcessedCanvas(false, { fullResolution: true });
+      source = type === "image/tiff" && state.imageBitDepth === 16 && (state.rawImage || state.deepImage)
+        ? await makeProcessedRgba16()
+        : await makeProcessedCanvas(false, { fullResolution: true });
     } catch (error) {
       console.error("high-resolution export", error);
       renderStatus.textContent = "高清导出失败";
@@ -2124,8 +2418,6 @@
       renderStatus.textContent = "高清导出失败";
       return showToast("导出失败");
     }
-    const type = state.outputFormat || "image/jpeg";
-    const quality = Number(state.quality) / 100;
     if (type === "image/tiff") {
       try {
         const blob = encodeTiff16(source);
@@ -2160,7 +2452,8 @@
   function encodeTiff16(source) {
     const width = source.width;
     const height = source.height;
-    const pixels = source.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, width, height).data;
+    const rgba16 = source.data instanceof Uint16Array && source.data.length === width * height * 4 ? source.data : null;
+    const pixels = rgba16 || source.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, width, height).data;
     const entryCount = 10;
     const bitsOffset = 8 + 2 + entryCount * 12 + 4;
     const stripOffset = bitsOffset + 6;
@@ -2197,9 +2490,9 @@
     view.setUint16(bitsOffset + 4, 16, true);
     let at = stripOffset;
     for (let i = 0; i < pixels.length; i += 4) {
-      view.setUint16(at, pixels[i] * 257, true);
-      view.setUint16(at + 2, pixels[i + 1] * 257, true);
-      view.setUint16(at + 4, pixels[i + 2] * 257, true);
+      view.setUint16(at, rgba16 ? pixels[i] : pixels[i] * 257, true);
+      view.setUint16(at + 2, rgba16 ? pixels[i + 1] : pixels[i + 1] * 257, true);
+      view.setUint16(at + 4, rgba16 ? pixels[i + 2] : pixels[i + 2] * 257, true);
       at += 6;
     }
     return new Blob([buffer], { type: "image/tiff" });

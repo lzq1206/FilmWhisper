@@ -192,7 +192,8 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
     || values.viewingIlluminant !== "D50";
   if (!hasSecondaryWork) return FilmCurves.apply(source, values.curves);
 
-  const output = new Uint8ClampedArray(source);
+  const output = new source.constructor(source);
+  const scale = source instanceof Uint16Array ? 65535 : 255;
   const formatScale = ({ "35mm": 1, "120": 0.72, "4×5": 0.48, "Instax Mini": 1.3, "Instax Square": 1.16, "Instax Wide": 1.02, "Super 8": 1.55 })[values.filmFormat] || 1;
   const exposure = Math.pow(2, (Number(values.exposure) || 0) + (Number(values.push) || 0) * 0.32 + (Number(values.screenExposure) || 0));
   const contrast = (1 + (Number(values.contrast) || 0) / 100)
@@ -219,7 +220,7 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const i = (y * width + x) * 4;
-      const original = [source[i] / 255, source[i + 1] / 255, source[i + 2] / 255];
+      const original = [source[i] / scale, source[i + 1] / scale, source[i + 2] / scale];
       let [red, green, blue] = original;
       red = srgbDecode(red); green = srgbDecode(green); blue = srgbDecode(blue);
       red *= exposure; green *= exposure; blue *= exposure;
@@ -283,9 +284,9 @@ function processSecondary(source, width, height, values = {}, startRow = 0, full
         green += noise[1] * strength;
         blue += noise[2] * strength;
       }
-      output[i] = Math.max(0, Math.min(255, Math.round(red * 255)));
-      output[i + 1] = Math.max(0, Math.min(255, Math.round(green * 255)));
-      output[i + 2] = Math.max(0, Math.min(255, Math.round(blue * 255)));
+      output[i] = Math.max(0, Math.min(scale, Math.round(red * scale)));
+      output[i + 1] = Math.max(0, Math.min(scale, Math.round(green * scale)));
+      output[i + 2] = Math.max(0, Math.min(scale, Math.round(blue * scale)));
     }
   }
   return FilmCurves.apply(output, values.curves);
@@ -372,8 +373,7 @@ function renderRaw16Chunk(source, lutBuffer, amount, width, height, fullHeight, 
     // leave the result at 16-bit and apply the same arithmetic in place below.
     void x; void y;
   }
-  if (outputType === "rgba8") return processSecondary(output, width, height, values, startRow, fullHeight);
-  return FilmCurves.apply(output, values.curves);
+  return processSecondary(output, width, height, values, startRow, fullHeight);
 }
 
 function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight, startRow, values, colorSpace, applyAcr3, outputType, adapter) {
@@ -407,8 +407,7 @@ function renderRgba16Chunk(source, lutBuffer, amount, width, height, fullHeight,
     output[oi + 2] = Math.round(valuesOut[2] * scale);
     output[oi + 3] = scale;
   }
-  if (outputType === "rgba8") return processSecondary(output, width, height, values, startRow, fullHeight);
-  return FilmCurves.apply(output, values.curves);
+  return processSecondary(output, width, height, values, startRow, fullHeight);
 }
 
 self.onmessage = (event) => {
